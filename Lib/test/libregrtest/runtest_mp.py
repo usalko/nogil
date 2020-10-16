@@ -122,6 +122,7 @@ class MultiprocessResult(NamedTuple):
 
 ExcStr = str
 QueueOutput = tuple[Literal[False], MultiprocessResult] | tuple[Literal[True], ExcStr]
+WorkerExited = object()
 
 
 class ExitThread(Exception):
@@ -287,23 +288,26 @@ class TestWorkerProcess(threading.Thread):
         return MultiprocessResult(result, stdout, err_msg)
 
     def run(self) -> None:
-        while not self._stopped:
-            try:
+        try:
+            while not self._stopped:
                 try:
-                    test_name = next(self.pending)
-                except StopIteration:
-                    break
+                    try:
+                        test_name = next(self.pending)
+                    except StopIteration:
+                        break
 
-                mp_result = self._runtest(test_name)
-                self.output.put((False, mp_result))
+                    mp_result = self._runtest(test_name)
+                    self.output.put((False, mp_result))
 
-                if must_stop(mp_result.result, self.ns):
+                    if must_stop(mp_result.result, self.ns):
+                        break
+                except ExitThread:
                     break
-            except ExitThread:
-                break
-            except BaseException:
-                self.output.put((True, traceback.format_exc()))
-                break
+                except BaseException:
+                    self.output.put((True, traceback.format_exc()))
+                    break
+        finally:
+            self.output.put(WorkerExited)
 
     def _wait_completed(self) -> None:
         popen = self._popen
@@ -360,6 +364,7 @@ class MultiprocessTestRunner:
         self.regrtest = regrtest
         self.log = self.regrtest.log
         self.ns = regrtest.ns
+        self.num_alive_workers = 0
         self.output: queue.Queue[QueueOutput] = queue.Queue()
         self.pending = MultiprocessIterator(self.regrtest.tests)
         if self.ns.timeout is not None:
@@ -383,6 +388,7 @@ class MultiprocessTestRunner:
         self.log(msg)
         for worker in self.workers:
             worker.start()
+        self.num_alive_workers = len(self.workers)
 
     def stop_workers(self) -> None:
         start_time = time.monotonic()
@@ -392,13 +398,6 @@ class MultiprocessTestRunner:
             worker.wait_stopped(start_time)
 
     def _get_result(self) -> QueueOutput | None:
-        if not any(worker.is_alive() for worker in self.workers):
-            # all worker threads are done: consume pending results
-            try:
-                return self.output.get(timeout=0)
-            except queue.Empty:
-                return None
-
         use_faulthandler = (self.ns.timeout is not None)
         timeout = PROGRESS_UPDATE
         while True:
@@ -408,7 +407,13 @@ class MultiprocessTestRunner:
 
             # wait for a thread
             try:
-                return self.output.get(timeout=timeout)
+                result = self.output.get(timeout=timeout)
+                if result is WorkerExited:
+                    self.num_alive_workers -= 1
+                    if self.num_alive_workers == 0:
+                        return None
+                    continue
+                return result
             except queue.Empty:
                 pass
 
