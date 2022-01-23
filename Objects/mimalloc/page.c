@@ -16,7 +16,10 @@ terms of the MIT license. A copy of the license can be found in the file
 #include "mimalloc-atomic.h"
 
 #include "Python.h"
+#include "pycore_interp.h"
+#include "pycore_llist.h"
 #include "pycore_pystate.h"
+#include "pycore_qsbr.h"
 
 /* -----------------------------------------------------------
   Definition of page queues for each block size
@@ -331,7 +334,6 @@ void _mi_heap_delayed_free(mi_heap_t* heap) {
   Unfull, abandon, free and retire
 ----------------------------------------------------------- */
 
-
 // Move a page from the full list back to a regular list
 void _mi_page_unfull(mi_page_t* page) {
   mi_assert_internal(page != NULL);
@@ -340,8 +342,9 @@ void _mi_page_unfull(mi_page_t* page) {
   if (!mi_page_is_in_full(page)) return;
 
   mi_heap_t* heap = mi_page_heap(page);
-  if (page->tag == mi_heap_tag_gc && heap->gcstate) {
-    mi_atomic_addi64(&heap->gcstate->gc_live, -page->capacity);
+  if (page->tag == mi_heap_tag_gc) {
+    PyThreadState *tstate = _PyThreadState_GET();
+    mi_atomic_addi64(&tstate->interp->gc.gc_live, -page->capacity);
   }
   mi_page_queue_t* pqfull = &heap->pages[MI_BIN_FULL];
   mi_page_set_in_full(page, false); // to get the right queue
@@ -359,9 +362,10 @@ static void mi_page_to_full(mi_page_t* page, mi_page_queue_t* pq) {
   mi_page_queue_enqueue_from(&mi_page_heap(page)->pages[MI_BIN_FULL], pq, page);
   _mi_page_free_collect(page,false);  // try to collect right away in case another thread freed just before MI_USE_DELAYED_FREE was set
 
-  mi_heap_t* heap = mi_page_heap(page);
-  if (page->tag == mi_heap_tag_gc && heap->gcstate) {
-    mi_atomic_addi64(&heap->gcstate->gc_live, page->capacity);
+  if (page->tag == mi_heap_tag_gc) {
+    PyThreadState *tstate = _PyThreadState_GET();
+    struct _gc_runtime_state *gcstate = &tstate->interp->gc;
+    mi_atomic_addi64(&gcstate->gc_live, page->capacity);
   }
 }
 
@@ -431,7 +435,7 @@ static void _mi_page_qsbr_enqueue(mi_page_t* page) {
   mi_assert_internal(page->qsbr_node.next == NULL);
   mi_assert_internal(page->qsbr_node.prev == NULL);
 
-  page->qsbr_epoch = _Py_qsbr_advance(&_PyRuntime.qsbr);
+  page->qsbr_epoch = _Py_qsbr_advance(&_PyRuntime.qsbr_shared);
   mi_tld_t *tld = mi_page_heap(page)->tld;
   llist_insert_tail(&tld->page_list, &page->qsbr_node);
   _mi_page_uncollect(page);
@@ -681,9 +685,9 @@ static void mi_page_init(mi_heap_t* heap, mi_page_t* page, size_t block_size, mi
   #endif
   page->is_zero = page->is_zero_init;
   page->tag = heap->tag;
-  // TODO: only if running with nogil
-  page->use_qsbr = (page->tag == mi_heap_tag_gc || page->tag == mi_heap_tag_obj);
   page->debug_offset = heap->debug_offset;
+  // TODO(sgross): only if running with nogil
+  page->use_qsbr = (page->tag == mi_heap_tag_gc || page->tag == mi_heap_tag_obj);
 
   mi_assert_internal(page->capacity == 0);
   mi_assert_internal(page->free == NULL);
@@ -718,7 +722,7 @@ static void _mi_qsbr_poll(mi_heap_t* heap)
     return;
   }
 
-  PyThreadState *tstate = PyThreadState_GET();
+  PyThreadStateImpl *tstate = (PyThreadStateImpl *)PyThreadState_GET();
   struct llist_node *node = head->next;
     while (node != head) {
     mi_page_t *page = llist_data(node, mi_page_t, qsbr_node);
@@ -891,6 +895,16 @@ void* _mi_malloc_generic(mi_heap_t* heap, size_t size) mi_attr_noexcept
     heap = mi_get_default_heap();
   }
   mi_assert_internal(mi_heap_is_initialized(heap));
+
+  if (heap->tag == mi_heap_tag_gc) {
+    PyThreadState *tstate = _PyThreadState_GET();
+    struct _gc_runtime_state *gcstate = &tstate->interp->gc;
+    if (_PyGC_ShouldCollect(gcstate) &&
+        !_Py_atomic_load_int_relaxed(&gcstate->collecting))
+    {
+        _PyGC_Collect(tstate);
+    }
+  }
 
   // call potential deferred free routines
   _mi_deferred_free(heap, false);

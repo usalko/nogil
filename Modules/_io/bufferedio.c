@@ -10,9 +10,7 @@
 #define PY_SSIZE_T_CLEAN
 #include "Python.h"
 #include "pycore_object.h"
-#include "pycore_pystate.h"
-#include "structmember.h"
-#include "pythread.h"
+#include "structmember.h"         // PyMemberDef
 #include "_iomodule.h"
 
 /*[clinic input]
@@ -295,12 +293,11 @@ _enter_buffered_busy(buffered *self)
     }
     Py_END_ALLOW_THREADS
     if (relax_locking && st != PY_LOCK_ACQUIRED) {
-        PyObject *msgobj = PyUnicode_FromFormat(
-            "could not acquire lock for %A at interpreter "
+        PyObject *ascii = PyObject_ASCII((PyObject*)self);
+        _Py_FatalErrorFormat(__func__,
+            "could not acquire lock for %s at interpreter "
             "shutdown, possibly due to daemon threads",
-            (PyObject *) self);
-        const char *msg = PyUnicode_AsUTF8(msgobj);
-        Py_FatalError(msg);
+            ascii ? PyUnicode_AsUTF8(ascii) : "<ascii(self) failed>");
     }
     return 1;
 }
@@ -347,11 +344,10 @@ _enter_buffered_busy(buffered *self)
      : buffered_closed(self)))
 
 #define CHECK_CLOSED(self, error_msg) \
-    if (IS_CLOSED(self)) { \
+    if (IS_CLOSED(self) & (Py_SAFE_DOWNCAST(READAHEAD(self), Py_off_t, Py_ssize_t) == 0)) { \
         PyErr_SetString(PyExc_ValueError, error_msg); \
         return NULL; \
-    }
-
+    } \
 
 #define VALID_READ_BUFFER(self) \
     (self->readable && self->read_end != -1)
@@ -474,7 +470,7 @@ buffered_simple_flush_impl(buffered *self)
 /*[clinic end generated code: output=ed87b24b70b26032 input=192a678f7065472b]*/
 {
     CHECK_INITIALIZED(self)
-    return _PyObject_CallMethodNoArgs(self->raw, _PyIO_str_flush);
+    return PyObject_CallMethodNoArgs(self->raw, _PyIO_str_flush);
 }
 
 static int
@@ -494,8 +490,11 @@ buffered_closed(buffered *self)
 static PyObject *
 buffered_closed_get(buffered *self, void *context)
 {
+    _PyRecursiveMutex_lock(&self->rlock);
     CHECK_INITIALIZED(self)
-    return PyObject_GetAttr(self->raw, _PyIO_str_closed);
+    PyObject *res = PyObject_GetAttr(self->raw, _PyIO_str_closed);
+    _PyRecursiveMutex_unlock(&self->rlock);
+    return res;
 }
 
 /*[clinic input]
@@ -531,7 +530,7 @@ _io__Buffered_close_impl(buffered *self)
     }
     /* flush() will most probably re-take the lock, so drop it first */
     LEAVE_BUFFERED(self)
-    res = _PyObject_CallMethodNoArgs((PyObject *)self, _PyIO_str_flush);
+    res = PyObject_CallMethodNoArgs((PyObject *)self, _PyIO_str_flush);
     if (!ENTER_BUFFERED(self))
         return NULL;
     if (res == NULL)
@@ -539,7 +538,7 @@ _io__Buffered_close_impl(buffered *self)
     else
         Py_DECREF(res);
 
-    res = _PyObject_CallMethodNoArgs(self->raw, _PyIO_str_close);
+    res = PyObject_CallMethodNoArgs(self->raw, _PyIO_str_close);
 
     if (self->buffer) {
         PyMem_Free(self->buffer);
@@ -550,6 +549,9 @@ _io__Buffered_close_impl(buffered *self)
         _PyErr_ChainExceptions(exc, val, tb);
         Py_CLEAR(res);
     }
+
+    self->read_end = 0;
+    self->pos = 0;
 
 end:
     LEAVE_BUFFERED(self)
@@ -568,7 +570,7 @@ _io__Buffered_detach_impl(buffered *self)
 {
     PyObject *raw, *res;
     CHECK_INITIALIZED(self)
-    res = _PyObject_CallMethodNoArgs((PyObject *)self, _PyIO_str_flush);
+    res = PyObject_CallMethodNoArgs((PyObject *)self, _PyIO_str_flush);
     if (res == NULL)
         return NULL;
     Py_DECREF(res);
@@ -590,7 +592,7 @@ _io__Buffered_seekable_impl(buffered *self)
 /*[clinic end generated code: output=90172abb5ceb6e8f input=9e5b651b27137d5f]*/
 {
     CHECK_INITIALIZED(self)
-    return _PyObject_CallMethodNoArgs(self->raw, _PyIO_str_seekable);
+    return PyObject_CallMethodNoArgs(self->raw, _PyIO_str_seekable);
 }
 
 /*[clinic input]
@@ -602,7 +604,7 @@ _io__Buffered_readable_impl(buffered *self)
 /*[clinic end generated code: output=92afa07661ecb698 input=265bc365547480d4]*/
 {
     CHECK_INITIALIZED(self)
-    return _PyObject_CallMethodNoArgs(self->raw, _PyIO_str_readable);
+    return PyObject_CallMethodNoArgs(self->raw, _PyIO_str_readable);
 }
 
 /*[clinic input]
@@ -614,21 +616,27 @@ _io__Buffered_writable_impl(buffered *self)
 /*[clinic end generated code: output=4e3eee8d6f9d8552 input=c23837f15fd476fd]*/
 {
     CHECK_INITIALIZED(self)
-    return _PyObject_CallMethodNoArgs(self->raw, _PyIO_str_writable);
+    return PyObject_CallMethodNoArgs(self->raw, _PyIO_str_writable);
 }
 
 static PyObject *
 buffered_name_get(buffered *self, void *context)
 {
+    _PyRecursiveMutex_lock(&self->rlock);
     CHECK_INITIALIZED(self)
-    return _PyObject_GetAttrId(self->raw, &PyId_name);
+    PyObject *res = _PyObject_GetAttrId(self->raw, &PyId_name);
+    _PyRecursiveMutex_unlock(&self->rlock);
+    return res;
 }
 
 static PyObject *
 buffered_mode_get(buffered *self, void *context)
 {
+    _PyRecursiveMutex_lock(&self->rlock);
     CHECK_INITIALIZED(self)
-    return _PyObject_GetAttrId(self->raw, &PyId_mode);
+    PyObject *res = _PyObject_GetAttrId(self->raw, &PyId_mode);
+    _PyRecursiveMutex_unlock(&self->rlock);
+    return res;
 }
 
 /* Lower-level APIs */
@@ -642,7 +650,7 @@ _io__Buffered_fileno_impl(buffered *self)
 /*[clinic end generated code: output=b717648d58a95ee3 input=68cbd1089d334a9e]*/
 {
     CHECK_INITIALIZED(self)
-    return _PyObject_CallMethodNoArgs(self->raw, _PyIO_str_fileno);
+    return PyObject_CallMethodNoArgs(self->raw, _PyIO_str_fileno);
 }
 
 /*[clinic input]
@@ -654,7 +662,7 @@ _io__Buffered_isatty_impl(buffered *self)
 /*[clinic end generated code: output=c20e55caae67baea input=eb2a672d701cdb36]*/
 {
     CHECK_INITIALIZED(self)
-    return _PyObject_CallMethodNoArgs(self->raw, _PyIO_str_isatty);
+    return PyObject_CallMethodNoArgs(self->raw, _PyIO_str_isatty);
 }
 
 /* Forward decls */
@@ -718,7 +726,7 @@ _buffered_raw_tell(buffered *self)
 {
     Py_off_t n;
     PyObject *res;
-    res = _PyObject_CallMethodNoArgs(self->raw, _PyIO_str_tell);
+    res = PyObject_CallMethodNoArgs(self->raw, _PyIO_str_tell);
     if (res == NULL)
         return -1;
     n = PyNumber_AsOff_t(res, PyExc_ValueError);
@@ -1372,16 +1380,20 @@ _io__Buffered_truncate_impl(buffered *self, PyObject *pos)
     PyObject *res = NULL;
 
     CHECK_INITIALIZED(self)
+    CHECK_CLOSED(self, "truncate of closed file")
+    if (!self->writable) {
+        return bufferediobase_unsupported("truncate");
+    }
     if (!ENTER_BUFFERED(self))
         return NULL;
 
-    if (self->writable) {
-        res = buffered_flush_and_rewind_unlocked(self);
-        if (res == NULL)
-            goto end;
-        Py_CLEAR(res);
+    res = buffered_flush_and_rewind_unlocked(self);
+    if (res == NULL) {
+        goto end;
     }
-    res = _PyObject_CallMethodOneArg(self->raw, _PyIO_str_truncate, pos);
+    Py_CLEAR(res);
+
+    res = PyObject_CallMethodOneArg(self->raw, _PyIO_str_truncate, pos);
     if (res == NULL)
         goto end;
     /* Reset cached position */
@@ -1408,7 +1420,7 @@ buffered_iternext_locked(buffered *self)
         line = _buffered_readline(self, -1);
     }
     else {
-        line = _PyObject_CallMethodNoArgs((PyObject *)self,
+        line = PyObject_CallMethodNoArgs((PyObject *)self,
                                              _PyIO_str_readline);
         if (line && !PyBytes_Check(line)) {
             PyErr_Format(PyExc_OSError,
@@ -1513,8 +1525,8 @@ _io_BufferedReader___init___impl(buffered *self, PyObject *raw,
         return -1;
     _bufferedreader_reset_buf(self);
 
-    self->fast_closed_checks = (Py_TYPE(self) == &PyBufferedReader_Type &&
-                                Py_TYPE(raw) == &PyFileIO_Type);
+    self->fast_closed_checks = (Py_IS_TYPE(self, &PyBufferedReader_Type) &&
+                                Py_IS_TYPE(raw, &PyFileIO_Type));
 
     self->ok = 1;
     return 0;
@@ -1538,7 +1550,7 @@ _bufferedreader_raw_read(buffered *self, char *start, Py_ssize_t len)
        raised (see issue #10956).
     */
     do {
-        res = _PyObject_CallMethodOneArg(self->raw, _PyIO_str_readinto, memobj);
+        res = PyObject_CallMethodOneArg(self->raw, _PyIO_str_readinto, memobj);
     } while (res == NULL && _PyIO_trap_eintr());
     Py_DECREF(memobj);
     if (res == NULL)
@@ -1637,7 +1649,7 @@ _bufferedreader_read_all(buffered *self)
         }
 
         /* Read until EOF or until read() would block. */
-        data = _PyObject_CallMethodNoArgs(self->raw, _PyIO_str_read);
+        data = PyObject_CallMethodNoArgs(self->raw, _PyIO_str_read);
         if (data == NULL)
             goto cleanup;
         if (data != Py_None && !PyBytes_Check(data)) {
@@ -1859,8 +1871,8 @@ _io_BufferedWriter___init___impl(buffered *self, PyObject *raw,
     _bufferedwriter_reset_buf(self);
     self->pos = 0;
 
-    self->fast_closed_checks = (Py_TYPE(self) == &PyBufferedWriter_Type &&
-                                Py_TYPE(raw) == &PyFileIO_Type);
+    self->fast_closed_checks = (Py_IS_TYPE(self, &PyBufferedWriter_Type) &&
+                                Py_IS_TYPE(raw, &PyFileIO_Type));
 
     self->ok = 1;
     return 0;
@@ -1886,7 +1898,7 @@ _bufferedwriter_raw_write(buffered *self, char *start, Py_ssize_t len)
     */
     do {
         errno = 0;
-        res = _PyObject_CallMethodOneArg(self->raw, _PyIO_str_write, memobj);
+        res = PyObject_CallMethodOneArg(self->raw, _PyIO_str_write, memobj);
         errnum = errno;
     } while (res == NULL && _PyIO_trap_eintr());
     Py_DECREF(memobj);
@@ -2373,8 +2385,8 @@ _io_BufferedRandom___init___impl(buffered *self, PyObject *raw,
     _bufferedwriter_reset_buf(self);
     self->pos = 0;
 
-    self->fast_closed_checks = (Py_TYPE(self) == &PyBufferedRandom_Type &&
-                                Py_TYPE(raw) == &PyFileIO_Type);
+    self->fast_closed_checks = (Py_IS_TYPE(self, &PyBufferedRandom_Type) &&
+                                Py_IS_TYPE(raw, &PyFileIO_Type));
 
     self->ok = 1;
     return 0;

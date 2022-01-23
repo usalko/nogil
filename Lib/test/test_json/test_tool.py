@@ -1,8 +1,10 @@
+import errno
 import os
 import sys
 import textwrap
 import unittest
 import subprocess
+
 from test import support
 from test.support.script_helper import assert_python_ok
 
@@ -128,6 +130,15 @@ class TestTool(unittest.TestCase):
         self.assertEqual(out, b'')
         self.assertEqual(err, b'')
 
+    def test_writing_in_place(self):
+        infile = self._create_infile()
+        rc, out, err = assert_python_ok('-m', 'json.tool', infile, infile)
+        with open(infile, "r", encoding="utf-8") as fp:
+            self.assertEqual(fp.read(), self.expect)
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, b'')
+        self.assertEqual(err, b'')
+
     def test_jsonlines(self):
         args = sys.executable, '-m', 'json.tool', '--json-lines'
         process = subprocess.run(args, input=self.jsonlines_raw, capture_output=True, text=True, check=True)
@@ -206,3 +217,14 @@ class TestTool(unittest.TestCase):
         # asserting an ascii encoded output file
         expected = [b'{', rb'    "key": "\ud83d\udca9"', b"}"]
         self.assertEqual(lines, expected)
+
+    @unittest.skipIf(sys.platform =="win32", "The test is failed with ValueError on Windows")
+    def test_broken_pipe_error(self):
+        cmd = [sys.executable, '-m', 'json.tool']
+        proc = subprocess.Popen(cmd,
+                                stdout=subprocess.PIPE,
+                                stdin=subprocess.PIPE)
+        # bpo-39828: Closing before json.tool attempts to write into stdout.
+        proc.stdout.close()
+        proc.communicate(b'"{}"')
+        self.assertEqual(proc.returncode, errno.EPIPE)

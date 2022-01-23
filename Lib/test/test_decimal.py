@@ -35,15 +35,31 @@ import locale
 from test.support import (run_unittest, run_doctest, is_resource_enabled,
                           requires_IEEE_754, requires_docstrings)
 from test.support import (import_fresh_module, TestFailed,
-                          run_with_locale, cpython_only)
+                          run_with_locale, cpython_only,
+                          darwin_malloc_err_warning)
 import random
 import inspect
 import threading
+import sysconfig
+_cflags = sysconfig.get_config_var('CFLAGS') or ''
+_config_args = sysconfig.get_config_var('CONFIG_ARGS') or ''
+MEMORY_SANITIZER = (
+    '-fsanitize=memory' in _cflags or
+    '--with-memory-sanitizer' in _config_args
+)
+
+ADDRESS_SANITIZER = (
+    '-fsanitize=address' in _cflags
+)
+
+
+if sys.platform == 'darwin':
+    darwin_malloc_err_warning('test_decimal')
 
 
 C = import_fresh_module('decimal', fresh=['_decimal'])
 P = import_fresh_module('decimal', blocked=['_decimal'])
-orig_sys_decimal = sys.modules['decimal']
+import decimal as orig_sys_decimal
 
 # fractions module must import the correct decimal module.
 cfractions = import_fresh_module('fractions', fresh=['fractions'])
@@ -5201,6 +5217,7 @@ class CWhitebox(unittest.TestCase):
         DefaultContext = C.DefaultContext
 
         InvalidOperation = C.InvalidOperation
+        FloatOperation = C.FloatOperation
         DivisionByZero = C.DivisionByZero
         Overflow = C.Overflow
         Subnormal = C.Subnormal
@@ -5274,6 +5291,7 @@ class CWhitebox(unittest.TestCase):
           Underflow: C.DecUnderflow,
           Overflow: C.DecOverflow,
           DivisionByZero: C.DecDivisionByZero,
+          FloatOperation: C.DecFloatOperation,
           InvalidOperation: C.DecIEEEInvalidOperation
         }
         IntCond = [
@@ -5475,6 +5493,46 @@ class CWhitebox(unittest.TestCase):
         for cls in X, Y, Z:
             self.assertEqual(Decimal.from_float(cls(101.1)),
                              Decimal.from_float(101.1))
+
+    # Issue 41540:
+    @unittest.skipIf(sys.platform.startswith("aix"),
+                     "AIX: default ulimit: test is flaky because of extreme over-allocation")
+    @unittest.skipIf(MEMORY_SANITIZER or ADDRESS_SANITIZER, "sanitizer defaults to crashing "
+                     "instead of returning NULL for malloc failure.")
+    def test_maxcontext_exact_arith(self):
+
+        # Make sure that exact operations do not raise MemoryError due
+        # to huge intermediate values when the context precision is very
+        # large.
+
+        # The following functions fill the available precision and are
+        # therefore not suitable for large precisions (by design of the
+        # specification).
+        MaxContextSkip = ['logical_invert', 'next_minus', 'next_plus',
+                          'logical_and', 'logical_or', 'logical_xor',
+                          'next_toward', 'rotate', 'shift']
+
+        Decimal = C.Decimal
+        Context = C.Context
+        localcontext = C.localcontext
+
+        # Here only some functions that are likely candidates for triggering a
+        # MemoryError are tested.  deccheck.py has an exhaustive test.
+        maxcontext = Context(prec=C.MAX_PREC, Emin=C.MIN_EMIN, Emax=C.MAX_EMAX)
+        with localcontext(maxcontext):
+            self.assertEqual(Decimal(0).exp(), 1)
+            self.assertEqual(Decimal(1).ln(), 0)
+            self.assertEqual(Decimal(1).log10(), 0)
+            self.assertEqual(Decimal(10**2).log10(), 2)
+            self.assertEqual(Decimal(10**223).log10(), 223)
+            self.assertEqual(Decimal(10**19).logb(), 19)
+            self.assertEqual(Decimal(4).sqrt(), 2)
+            self.assertEqual(Decimal("40E9").sqrt(), Decimal('2.0E+5'))
+            self.assertEqual(divmod(Decimal(10), 3), (3, 1))
+            self.assertEqual(Decimal(10) // 3, 3)
+            self.assertEqual(Decimal(4) / 2, 2)
+            self.assertEqual(Decimal(400) ** -1, Decimal('0.0025'))
+
 
 @requires_docstrings
 @unittest.skipUnless(C, "test requires C version")

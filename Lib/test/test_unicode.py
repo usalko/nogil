@@ -720,6 +720,13 @@ class UnicodeTest(string_tests.CommonTest,
         self.assertFalse("©".isidentifier())
         self.assertFalse("0".isidentifier())
 
+    @support.cpython_only
+    def test_isidentifier_legacy(self):
+        import _testcapi
+        u = '𝖀𝖓𝖎𝖈𝖔𝖉𝖊'
+        self.assertTrue(u.isidentifier())
+        self.assertTrue(_testcapi.unicode_legacy_string(u).isidentifier())
+
     def test_isprintable(self):
         self.assertTrue("".isprintable())
         self.assertTrue(" ".isprintable())
@@ -1210,8 +1217,11 @@ class UnicodeTest(string_tests.CommonTest,
                           0, 1, 2, 3, 4, 5, 6, 7)
 
         # string format spec errors
-        self.assertRaises(ValueError, "{0:-s}".format, '')
-        self.assertRaises(ValueError, format, "", "-")
+        sign_msg = "Sign not allowed in string format specifier"
+        self.assertRaisesRegex(ValueError, sign_msg, "{0:-s}".format, '')
+        self.assertRaisesRegex(ValueError, sign_msg, format, "", "-")
+        space_msg = "Space not allowed in string format specifier"
+        self.assertRaisesRegex(ValueError, space_msg, "{: }".format, '')
         self.assertRaises(ValueError, "{0:=s}".format, '')
 
         # Alternate formatting is not supported
@@ -1752,7 +1762,7 @@ class UnicodeTest(string_tests.CommonTest,
         # Issue #8271: during the decoding of an invalid UTF-8 byte sequence,
         # only the start byte and the continuation byte(s) are now considered
         # invalid, instead of the number of bytes specified by the start byte.
-        # See http://www.unicode.org/versions/Unicode5.2.0/ch03.pdf (page 95,
+        # See https://www.unicode.org/versions/Unicode5.2.0/ch03.pdf (page 95,
         # table 3-8, Row 2) for more information about the algorithm used.
         FFFD = '\ufffd'
         sequences = [

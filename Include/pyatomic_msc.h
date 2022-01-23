@@ -9,6 +9,12 @@
 // updated for ARM synchronization.
 
 
+static inline int
+_Py_atomic_add_int(volatile int *address, int value)
+{
+    return (int)_InterlockedExchangeAdd((volatile long*)address, (long)value);
+}
+
 static inline int32_t
 _Py_atomic_add_int32(volatile int32_t *address, int32_t value)
 {
@@ -53,6 +59,22 @@ _Py_atomic_add_uintptr(volatile uintptr_t *address, uintptr_t value)
 #endif
 }
 
+static inline Py_ssize_t
+_Py_atomic_add_ssize(volatile Py_ssize_t *address, Py_ssize_t value)
+{
+#if SIZEOF_SIZE_T == 8
+    return (Py_ssize_t)_InterlockedExchangeAdd64((volatile __int64*)address, (__int64)value);
+#else
+    return (Py_ssize_t)_InterlockedExchangeAdd((volatile long*)address, (long)value);
+#endif
+}
+
+
+static inline int
+_Py_atomic_compare_exchange_int(volatile int *address, int expected, int value)
+{
+    return (long)expected == _InterlockedCompareExchange((volatile long*)address, (long)value, (long)expected);
+}
 
 static inline int
 _Py_atomic_compare_exchange_int32(volatile int32_t *address, int32_t expected, int32_t value)
@@ -96,6 +118,12 @@ _Py_atomic_compare_exchange_ptr(volatile void *address, void *expected, void *va
     return (void *)expected == _InterlockedCompareExchangePointer((void * volatile *)address, (void *)value, (void *)expected);
 }
 
+
+static inline int
+_Py_atomic_exchange_int(volatile int *address, int value)
+{
+    return (int)_InterlockedExchange((volatile long*)address, (long)value);
+}
 
 static inline int32_t
 _Py_atomic_exchange_int32(volatile int32_t *address, int32_t value)
@@ -141,6 +169,12 @@ _Py_atomic_exchange_ptr(volatile void *address, void *value)
 }
 
 
+static inline int
+_Py_atomic_load_int(const volatile int *address)
+{
+    return *address;
+}
+
 static inline int32_t
 _Py_atomic_load_int32(const volatile int32_t *address)
 {
@@ -177,14 +211,20 @@ _Py_atomic_load_uintptr(const volatile uintptr_t *address)
     return *address;
 }
 
+static inline Py_ssize_t
+_Py_atomic_load_ssize(const volatile Py_ssize_t* address)
+{
+    return *address;
+}
+
 static inline void *
 _Py_atomic_load_ptr(const volatile void *address)
 {
     return *(void* volatile*)address;
 }
 
-static inline Py_ssize_t
-_Py_atomic_load_ssize(const volatile Py_ssize_t* address)
+static inline int
+_Py_atomic_load_int_relaxed(const volatile int* address)
 {
     return *address;
 }
@@ -225,6 +265,12 @@ _Py_atomic_load_uintptr_relaxed(const volatile uintptr_t* address)
     return *address;
 }
 
+static inline Py_ssize_t
+_Py_atomic_load_ssize_relaxed(const volatile Py_ssize_t* address)
+{
+    return *address;
+}
+
 static inline void*
 _Py_atomic_load_ptr_relaxed(const volatile void* address)
 {
@@ -232,6 +278,12 @@ _Py_atomic_load_ptr_relaxed(const volatile void* address)
 }
 
 
+
+static inline void
+_Py_atomic_store_int(volatile int *address, int value)
+{
+    _InterlockedExchange((volatile long*)address, (long)value);
+}
 
 static inline void
 _Py_atomic_store_int32(volatile int32_t *address, int32_t value)
@@ -275,17 +327,19 @@ _Py_atomic_store_ptr(volatile void *address, void *value)
     _InterlockedExchangePointer((void * volatile *)address, (void *)value);
 }
 
-
-// FIXME: rename to _Py_atomic_store_uint8_relaxed
-static inline void
-_Py_atomic_store_uint8(volatile uint8_t* address, uint8_t value)
-{
-    *address = value;
-}
-
-// FIXME: rename to _Py_atomic_store_ssize_relaxed
 static inline void
 _Py_atomic_store_ssize(volatile Py_ssize_t* address, Py_ssize_t value)
+{
+#if SIZEOF_SIZE_T == 8
+    _InterlockedExchange64((volatile __int64*)address, (__int64)value);
+#else
+    _InterlockedExchange((volatile long*)address, (long)value);
+#endif
+}
+
+
+static inline void
+_Py_atomic_store_int_relaxed(volatile int* address, int value)
 {
     *address = value;
 }
@@ -351,7 +405,33 @@ _Py_atomic_store_ssize_relaxed(volatile Py_ssize_t* address, Py_ssize_t value)
 }
 
 static inline void
-_Py_atomic_thread_fence(void)
+_Py_atomic_store_uint8_relaxed(volatile uint8_t* address, uint8_t value)
 {
+    *address = value;
+}
+
+ static inline void
+_Py_atomic_fence_seq_cst(void)
+{
+#if defined(_M_ARM64) || defined(_M_ARM)
+    __dmb(_ARM64_BARRIER_ISH);
+#elif defined(_M_X64)
     __faststorefence();
+#elif defined(_M_IX86)
+    _mm_mfence();
+#else
+#error no implementation of _Py_atomic_fence_seq_cst
+#endif
+}
+
+ static inline void
+_Py_atomic_fence_release(void)
+{
+#if defined(_M_ARM64) || defined(_M_ARM)
+    __dmb(_ARM64_BARRIER_ISH);
+#elif defined(_M_X64) || defined(_M_IX86)
+    _ReadWriteBarrier();
+#else
+#error no implementation of _Py_atomic_fence_release
+#endif
 }

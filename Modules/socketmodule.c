@@ -101,7 +101,7 @@ Local naming conventions:
 
 #define PY_SSIZE_T_CLEAN
 #include "Python.h"
-#include "structmember.h"
+#include "structmember.h"         // PyMemberDef
 
 #ifdef _Py_MEMORY_SANITIZER
 # include <sanitizer/msan_interface.h>
@@ -151,9 +151,6 @@ getblocking() -- return True if socket is blocking, False if non-blocking\n\
 setsockopt(level, optname, value[, optlen]) -- set socket options\n\
 settimeout(None | float) -- set or clear the timeout\n\
 shutdown(how) -- shut down traffic in one or both directions\n\
-if_nameindex() -- return all network interface indices and names\n\
-if_nametoindex(name) -- return the corresponding interface index\n\
-if_indextoname(index) -- return the corresponding interface name\n\
 \n\
  [*] not available on all platforms!");
 
@@ -234,13 +231,8 @@ http://cvsweb.netbsd.org/bsdweb.cgi/src/lib/libc/net/getaddrinfo.c.diff?r1=1.82&
 #define RELEASE_GETADDRINFO_LOCK
 #endif
 
-#if defined(USE_GETHOSTBYNAME_LOCK) || defined(USE_GETADDRINFO_LOCK)
-# include "pythread.h"
-#endif
-
-
 #if defined(__APPLE__) || defined(__CYGWIN__) || defined(__NetBSD__)
-# include <sys/ioctl.h>
+#  include <sys/ioctl.h>
 #endif
 
 
@@ -478,13 +470,12 @@ remove_unusable_flags(PyObject *m)
 #endif
 
 #ifdef MS_WIN32
-#undef EAFNOSUPPORT
-#define EAFNOSUPPORT WSAEAFNOSUPPORT
-#define snprintf _snprintf
+#  undef EAFNOSUPPORT
+#  define EAFNOSUPPORT WSAEAFNOSUPPORT
 #endif
 
 #ifndef SOCKETCLOSE
-#define SOCKETCLOSE close
+#  define SOCKETCLOSE close
 #endif
 
 #if (defined(HAVE_BLUETOOTH_H) || defined(HAVE_BLUETOOTH_BLUETOOTH_H)) && !defined(__NetBSD__) && !defined(__DragonFly__)
@@ -658,7 +649,7 @@ set_herror(int h_error)
     PyObject *v;
 
 #ifdef HAVE_HSTRERROR
-    v = Py_BuildValue("(is)", h_error, (char *)hstrerror(h_error));
+    v = Py_BuildValue("(is)", h_error, hstrerror(h_error));
 #else
     v = Py_BuildValue("(is)", h_error, "host not found");
 #endif
@@ -974,7 +965,7 @@ sock_call_ex(PySocketSockObject *s,
                reading, but the data then discarded by the OS because of a
                wrong checksum.
 
-               Loop on select() to recheck for socket readyness. */
+               Loop on select() to recheck for socket readiness. */
             continue;
         }
 
@@ -1561,6 +1552,16 @@ makesockaddr(SOCKET_T sockfd, struct sockaddr *addr, size_t addrlen, int proto)
                                           a->can_addr.tp.tx_id);
           }
 #endif /* CAN_ISOTP */
+#ifdef CAN_J1939
+          case CAN_J1939:
+          {
+              return Py_BuildValue("O&KIB", PyUnicode_DecodeFSDefault,
+                                          ifname,
+                                          (unsigned long long)a->can_addr.j1939.name,
+                                          (unsigned int)a->can_addr.j1939.pgn,
+                                          a->can_addr.j1939.addr);
+          }
+#endif /* CAN_J1939 */
           default:
           {
               return Py_BuildValue("(O&)", PyUnicode_DecodeFSDefault,
@@ -2242,6 +2243,55 @@ getsockaddrarg(PySocketSockObject *s, PyObject *args,
             return 1;
         }
 #endif /* CAN_ISOTP */
+#ifdef CAN_J1939
+        case CAN_J1939:
+        {
+            PyObject *interfaceName;
+            struct ifreq ifr;
+            Py_ssize_t len;
+            unsigned long long j1939_name; /* at least 64 bits */
+            unsigned int j1939_pgn; /* at least 32 bits */
+            uint8_t j1939_addr;
+
+            struct sockaddr_can *addr = &addrbuf->can;
+
+            if (!PyArg_ParseTuple(args, "O&KIB", PyUnicode_FSConverter,
+                                              &interfaceName,
+                                              &j1939_name,
+                                              &j1939_pgn,
+                                              &j1939_addr))
+                return 0;
+
+            len = PyBytes_GET_SIZE(interfaceName);
+
+            if (len == 0) {
+                ifr.ifr_ifindex = 0;
+            } else if ((size_t)len < sizeof(ifr.ifr_name)) {
+                strncpy(ifr.ifr_name, PyBytes_AS_STRING(interfaceName), sizeof(ifr.ifr_name));
+                ifr.ifr_name[(sizeof(ifr.ifr_name))-1] = '\0';
+                if (ioctl(s->sock_fd, SIOCGIFINDEX, &ifr) < 0) {
+                    s->errorhandler();
+                    Py_DECREF(interfaceName);
+                    return 0;
+                }
+            } else {
+                PyErr_SetString(PyExc_OSError,
+                                "AF_CAN interface name too long");
+                Py_DECREF(interfaceName);
+                return 0;
+            }
+
+            addr->can_family = AF_CAN;
+            addr->can_ifindex = ifr.ifr_ifindex;
+            addr->can_addr.j1939.name = (uint64_t)j1939_name;
+            addr->can_addr.j1939.pgn = (uint32_t)j1939_pgn;
+            addr->can_addr.j1939.addr = j1939_addr;
+
+            *len_ret = sizeof(*addr);
+            Py_DECREF(interfaceName);
+            return 1;
+        }
+#endif /* CAN_J1939 */
         default:
             PyErr_Format(PyExc_OSError,
                          "%s(): unsupported CAN protocol", caller);
@@ -3354,8 +3404,9 @@ sock_getsockname(PySocketSockObject *s, PyObject *Py_UNUSED(ignored))
 PyDoc_STRVAR(getsockname_doc,
 "getsockname() -> address info\n\
 \n\
-Return the address of the local endpoint.  For IP sockets, the address\n\
-info is a pair (hostaddr, port).");
+Return the address of the local endpoint. The format depends on the\n\
+address family. For IPv4 sockets, the address info is a pair\n\
+(hostaddr, port).");
 
 
 #ifdef HAVE_GETPEERNAME         /* Cray APP doesn't have this :-( */
@@ -5099,7 +5150,7 @@ sock_initobj(PyObject *self, PyObject *args, PyObject *kwds)
 
 #ifdef MS_WINDOWS
     /* In this case, we don't use the family, type and proto args */
-    if (fdobj != NULL && fdobj != Py_None)
+    if (fdobj == NULL || fdobj == Py_None)
 #endif
     {
         if (PySys_Audit("socket.__new__", "Oiii",
@@ -5121,8 +5172,9 @@ sock_initobj(PyObject *self, PyObject *args, PyObject *kwds)
             }
             memcpy(&info, PyBytes_AS_STRING(fdobj), sizeof(info));
 
-            if (PySys_Audit("socket()", "iii", info.iAddressFamily,
-                            info.iSocketType, info.iProtocol) < 0) {
+            if (PySys_Audit("socket.__new__", "Oiii", s,
+                            info.iAddressFamily, info.iSocketType,
+                            info.iProtocol) < 0) {
                 return -1;
             }
 
@@ -5502,7 +5554,7 @@ sock_decode_hostname(const char *name)
 #ifdef MS_WINDOWS
     /* Issue #26227: gethostbyaddr() returns a string encoded
      * to the ANSI code page */
-    return PyUnicode_DecodeFSDefault(name);
+    return PyUnicode_DecodeMBCS(name, strlen(name), "surrogatepass");
 #else
     /* Decode from UTF-8 */
     return PyUnicode_FromString(name);
@@ -7692,6 +7744,9 @@ PyInit__socket(void)
 #ifdef CAN_ISOTP
     PyModule_AddIntMacro(m, CAN_ISOTP);
 #endif
+#ifdef CAN_J1939
+    PyModule_AddIntMacro(m, CAN_J1939);
+#endif
 #endif
 #ifdef HAVE_LINUX_CAN_RAW_H
     PyModule_AddIntMacro(m, CAN_RAW_FILTER);
@@ -7701,6 +7756,9 @@ PyInit__socket(void)
 #endif
 #ifdef HAVE_LINUX_CAN_RAW_FD_FRAMES
     PyModule_AddIntMacro(m, CAN_RAW_FD_FRAMES);
+#endif
+#ifdef HAVE_LINUX_CAN_RAW_JOIN_FILTERS
+    PyModule_AddIntMacro(m, CAN_RAW_JOIN_FILTERS);
 #endif
 #ifdef HAVE_LINUX_CAN_BCM_H
     PyModule_AddIntMacro(m, CAN_BCM);
@@ -7735,6 +7793,37 @@ PyInit__socket(void)
     /* CAN_FD_FRAME was only introduced in the 4.8.x kernel series */
     PyModule_AddIntConstant(m, "CAN_BCM_CAN_FD_FRAME", CAN_FD_FRAME);
 #endif
+#endif
+#ifdef HAVE_LINUX_CAN_J1939_H
+    PyModule_AddIntMacro(m, J1939_MAX_UNICAST_ADDR);
+    PyModule_AddIntMacro(m, J1939_IDLE_ADDR);
+    PyModule_AddIntMacro(m, J1939_NO_ADDR);
+    PyModule_AddIntMacro(m, J1939_NO_NAME);
+    PyModule_AddIntMacro(m, J1939_PGN_REQUEST);
+    PyModule_AddIntMacro(m, J1939_PGN_ADDRESS_CLAIMED);
+    PyModule_AddIntMacro(m, J1939_PGN_ADDRESS_COMMANDED);
+    PyModule_AddIntMacro(m, J1939_PGN_PDU1_MAX);
+    PyModule_AddIntMacro(m, J1939_PGN_MAX);
+    PyModule_AddIntMacro(m, J1939_NO_PGN);
+
+    /* J1939 socket options */
+    PyModule_AddIntMacro(m, SO_J1939_FILTER);
+    PyModule_AddIntMacro(m, SO_J1939_PROMISC);
+    PyModule_AddIntMacro(m, SO_J1939_SEND_PRIO);
+    PyModule_AddIntMacro(m, SO_J1939_ERRQUEUE);
+
+    PyModule_AddIntMacro(m, SCM_J1939_DEST_ADDR);
+    PyModule_AddIntMacro(m, SCM_J1939_DEST_NAME);
+    PyModule_AddIntMacro(m, SCM_J1939_PRIO);
+    PyModule_AddIntMacro(m, SCM_J1939_ERRQUEUE);
+
+    PyModule_AddIntMacro(m, J1939_NLA_PAD);
+    PyModule_AddIntMacro(m, J1939_NLA_BYTES_ACKED);
+
+    PyModule_AddIntMacro(m, J1939_EE_INFO_NONE);
+    PyModule_AddIntMacro(m, J1939_EE_INFO_TX_ABORT);
+
+    PyModule_AddIntMacro(m, J1939_FILTER_MAX);
 #endif
 #ifdef SOL_RDS
     PyModule_AddIntMacro(m, SOL_RDS);

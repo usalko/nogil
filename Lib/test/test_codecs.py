@@ -712,22 +712,10 @@ class UTF16Test(ReadTest, unittest.TestCase):
         self.addCleanup(support.unlink, support.TESTFN)
         with open(support.TESTFN, 'wb') as fp:
             fp.write(s)
-        with codecs.open(support.TESTFN, 'r',
-                         encoding=self.encoding) as reader:
+        with support.check_warnings(('', DeprecationWarning)):
+            reader = codecs.open(support.TESTFN, 'U', encoding=self.encoding)
+        with reader:
             self.assertEqual(reader.read(), s1)
-
-    def test_invalid_modes(self):
-        for mode in ('U', 'rU', 'r+U'):
-            with self.assertRaises(ValueError) as cm:
-                codecs.open(support.TESTFN, mode, encoding=self.encoding)
-            self.assertIn('invalid mode', str(cm.exception))
-
-        for mode in ('rt', 'wt', 'at', 'r+t'):
-            with self.assertRaises(ValueError) as cm:
-                codecs.open(support.TESTFN, mode, encoding=self.encoding)
-            self.assertIn("can't have text and binary mode at once",
-                          str(cm.exception))
-
 
 class UTF16LETest(ReadTest, unittest.TestCase):
     encoding = "utf-16-le"
@@ -1154,6 +1142,7 @@ class UTF8SigTest(UTF8Test, unittest.TestCase):
             got = ostream.getvalue()
             self.assertEqual(got, unistring)
 
+
 class EscapeDecodeTest(unittest.TestCase):
     def test_empty(self):
         self.assertEqual(codecs.escape_decode(b""), (b"", 0))
@@ -1342,6 +1331,18 @@ class PunycodeTest(unittest.TestCase):
             self.assertEqual(uni, puny.decode("punycode"))
             puny = puny.decode("ascii").encode("ascii")
             self.assertEqual(uni, puny.decode("punycode"))
+
+    def test_decode_invalid(self):
+        testcases = [
+            (b"xn--w&", "strict", UnicodeError()),
+            (b"xn--w&", "ignore", "xn-"),
+        ]
+        for puny, errors, expected in testcases:
+            with self.subTest(puny=puny, errors=errors):
+                if isinstance(expected, Exception):
+                    self.assertRaises(UnicodeError, puny.decode, "punycode", errors)
+                else:
+                    self.assertEqual(puny.decode("punycode", errors), expected)
 
 
 # From http://www.gnu.org/software/libidn/draft-josefsson-idn-test-vectors.html
@@ -1712,6 +1713,14 @@ class CodecsModuleTest(unittest.TestCase):
                 codecs.encode, 'abc', 'undefined', errors)
             self.assertRaises(UnicodeError,
                 codecs.decode, b'abc', 'undefined', errors)
+
+    def test_file_closes_if_lookup_error_raised(self):
+        mock_open = mock.mock_open()
+        with mock.patch('builtins.open', mock_open) as file:
+            with self.assertRaises(LookupError):
+                codecs.open(support.TESTFN, 'wt', 'invalid-encoding')
+
+            file().close.assert_called()
 
 
 class StreamReaderTest(unittest.TestCase):
@@ -2174,6 +2183,18 @@ class CharmapTest(unittest.TestCase):
             ("", len(allbytes))
         )
 
+        self.assertRaisesRegex(TypeError,
+            "character mapping must be in range\\(0x110000\\)",
+            codecs.charmap_decode,
+            b"\x00\x01\x02", "strict", {0: "A", 1: 'Bb', 2: -2}
+        )
+
+        self.assertRaisesRegex(TypeError,
+            "character mapping must be in range\\(0x110000\\)",
+            codecs.charmap_decode,
+            b"\x00\x01\x02", "strict", {0: "A", 1: 'Bb', 2: 999999999}
+        )
+
     def test_decode_with_int2int_map(self):
         a = ord('a')
         b = ord('b')
@@ -2306,7 +2327,11 @@ class TypesTest(unittest.TestCase):
                          (r"\x5c\x55\x30\x30\x31\x31\x30\x30\x30\x30", 10))
 
 
-class UnicodeEscapeTest(unittest.TestCase):
+class UnicodeEscapeTest(ReadTest, unittest.TestCase):
+    encoding = "unicode-escape"
+
+    test_lone_surrogates = None
+
     def test_empty(self):
         self.assertEqual(codecs.unicode_escape_encode(""), (b"", 0))
         self.assertEqual(codecs.unicode_escape_decode(b""), ("", 0))
@@ -2393,8 +2418,50 @@ class UnicodeEscapeTest(unittest.TestCase):
         self.assertEqual(decode(br"\U00110000", "ignore"), ("", 10))
         self.assertEqual(decode(br"\U00110000", "replace"), ("\ufffd", 10))
 
+    def test_partial(self):
+        self.check_partial(
+            "\x00\t\n\r\\\xff\uffff\U00010000",
+            [
+                '',
+                '',
+                '',
+                '\x00',
+                '\x00',
+                '\x00\t',
+                '\x00\t',
+                '\x00\t\n',
+                '\x00\t\n',
+                '\x00\t\n\r',
+                '\x00\t\n\r',
+                '\x00\t\n\r\\',
+                '\x00\t\n\r\\',
+                '\x00\t\n\r\\',
+                '\x00\t\n\r\\',
+                '\x00\t\n\r\\\xff',
+                '\x00\t\n\r\\\xff',
+                '\x00\t\n\r\\\xff',
+                '\x00\t\n\r\\\xff',
+                '\x00\t\n\r\\\xff',
+                '\x00\t\n\r\\\xff',
+                '\x00\t\n\r\\\xff\uffff',
+                '\x00\t\n\r\\\xff\uffff',
+                '\x00\t\n\r\\\xff\uffff',
+                '\x00\t\n\r\\\xff\uffff',
+                '\x00\t\n\r\\\xff\uffff',
+                '\x00\t\n\r\\\xff\uffff',
+                '\x00\t\n\r\\\xff\uffff',
+                '\x00\t\n\r\\\xff\uffff',
+                '\x00\t\n\r\\\xff\uffff',
+                '\x00\t\n\r\\\xff\uffff',
+                '\x00\t\n\r\\\xff\uffff\U00010000',
+            ]
+        )
 
-class RawUnicodeEscapeTest(unittest.TestCase):
+class RawUnicodeEscapeTest(ReadTest, unittest.TestCase):
+    encoding = "raw-unicode-escape"
+
+    test_lone_surrogates = None
+
     def test_empty(self):
         self.assertEqual(codecs.raw_unicode_escape_encode(""), (b"", 0))
         self.assertEqual(codecs.raw_unicode_escape_decode(b""), ("", 0))
@@ -2442,6 +2509,35 @@ class RawUnicodeEscapeTest(unittest.TestCase):
         self.assertRaises(UnicodeDecodeError, decode, br"\U00110000")
         self.assertEqual(decode(br"\U00110000", "ignore"), ("", 10))
         self.assertEqual(decode(br"\U00110000", "replace"), ("\ufffd", 10))
+
+    def test_partial(self):
+        self.check_partial(
+            "\x00\t\n\r\\\xff\uffff\U00010000",
+            [
+                '\x00',
+                '\x00\t',
+                '\x00\t\n',
+                '\x00\t\n\r',
+                '\x00\t\n\r',
+                '\x00\t\n\r\\\xff',
+                '\x00\t\n\r\\\xff',
+                '\x00\t\n\r\\\xff',
+                '\x00\t\n\r\\\xff',
+                '\x00\t\n\r\\\xff',
+                '\x00\t\n\r\\\xff',
+                '\x00\t\n\r\\\xff\uffff',
+                '\x00\t\n\r\\\xff\uffff',
+                '\x00\t\n\r\\\xff\uffff',
+                '\x00\t\n\r\\\xff\uffff',
+                '\x00\t\n\r\\\xff\uffff',
+                '\x00\t\n\r\\\xff\uffff',
+                '\x00\t\n\r\\\xff\uffff',
+                '\x00\t\n\r\\\xff\uffff',
+                '\x00\t\n\r\\\xff\uffff',
+                '\x00\t\n\r\\\xff\uffff',
+                '\x00\t\n\r\\\xff\uffff\U00010000',
+            ]
+        )
 
 
 class EscapeEncodeTest(unittest.TestCase):

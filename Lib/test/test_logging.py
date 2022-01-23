@@ -36,13 +36,14 @@ import os
 import queue
 import random
 import re
-import signal
 import socket
 import struct
 import sys
 import tempfile
 from test.support.script_helper import assert_python_ok, assert_python_failure
 from test import support
+from test.support import socket_helper
+from test.support.logging_helper import TestHandler
 import textwrap
 import threading
 import time
@@ -727,30 +728,19 @@ class HandlerTest(BaseTest):
 
         locks_held__ready_to_fork.wait()
         pid = os.fork()
-        if pid == 0:  # Child.
+        if pid == 0:
+            # Child process
             try:
                 test_logger.info(r'Child process did not deadlock. \o/')
             finally:
                 os._exit(0)
-        else:  # Parent.
+        else:
+            # Parent process
             test_logger.info(r'Parent process returned from fork. \o/')
             fork_happened__release_locks_and_end_thread.set()
             lock_holder_thread.join()
-            start_time = time.monotonic()
-            while True:
-                test_logger.debug('Waiting for child process.')
-                waited_pid, status = os.waitpid(pid, os.WNOHANG)
-                if waited_pid == pid:
-                    break  # child process exited.
-                if time.monotonic() - start_time > 7:
-                    break  # so long? implies child deadlock.
-                time.sleep(0.05)
-            test_logger.debug('Done waiting.')
-            if waited_pid != pid:
-                os.kill(pid, signal.SIGKILL)
-                waited_pid, status = os.waitpid(pid, 0)
-                self.fail("child process deadlocked.")
-            self.assertEqual(status, 0, msg="child process error")
+
+            support.wait_process(pid, exitcode=0)
 
 
 class BadStream(object):
@@ -836,6 +826,7 @@ class TestSMTPServer(smtpd.SMTPServer):
         self.port = self.socket.getsockname()[1]
         self._handler = handler
         self._thread = None
+        self._quit = False
         self.poll_interval = poll_interval
 
     def process_message(self, peer, mailfrom, rcpttos, data):
@@ -867,16 +858,18 @@ class TestSMTPServer(smtpd.SMTPServer):
                               :func:`select` or :func:`poll` call by
                               :func:`asyncore.loop`.
         """
-        asyncore.loop(poll_interval, map=self._map)
+        while not self._quit:
+            asyncore.loop(poll_interval, map=self._map, count=1)
 
     def stop(self):
         """
         Stop the thread by closing the server instance.
         Wait for the server thread to terminate.
         """
-        self.close()
+        self._quit = True
         support.join_thread(self._thread)
         self._thread = None
+        self.close()
         asyncore.close_all(map=self._map, ignore_all=True)
 
 
@@ -1064,10 +1057,10 @@ class SMTPHandlerTest(BaseTest):
 
     def test_basic(self):
         sockmap = {}
-        server = TestSMTPServer((support.HOST, 0), self.process_message, 0.001,
+        server = TestSMTPServer((socket_helper.HOST, 0), self.process_message, 0.001,
                                 sockmap)
         server.start()
-        addr = (support.HOST, server.port)
+        addr = (socket_helper.HOST, server.port)
         h = logging.handlers.SMTPHandler(addr, 'me', 'you', 'Log',
                                          timeout=self.TIMEOUT)
         self.assertEqual(h.toaddrs, ['you'])
@@ -1166,6 +1159,32 @@ class MemoryHandlerTest(BaseTest):
         self.mem_hdlr.close()
         # assert that no new lines have been added
         self.assert_log_lines(lines)  # no change
+
+    def test_race_between_set_target_and_flush(self):
+        class MockRaceConditionHandler:
+            def __init__(self, mem_hdlr):
+                self.mem_hdlr = mem_hdlr
+                self.threads = []
+
+            def removeTarget(self):
+                self.mem_hdlr.setTarget(None)
+
+            def handle(self, msg):
+                thread = threading.Thread(target=self.removeTarget)
+                self.threads.append(thread)
+                thread.start()
+
+        target = MockRaceConditionHandler(self.mem_hdlr)
+        try:
+            self.mem_hdlr.setTarget(target)
+
+            for _ in range(10):
+                time.sleep(0.005)
+                self.mem_logger.info("not flushed")
+                self.mem_logger.warning("flushed")
+        finally:
+            for thread in target.threads:
+                support.join_thread(thread)
 
 
 class ExceptionFormatter(logging.Formatter):
@@ -1932,7 +1951,7 @@ class UnixSysLogHandlerTest(SysLogHandlerTest):
         SysLogHandlerTest.tearDown(self)
         support.unlink(self.address)
 
-@unittest.skipUnless(support.IPV6_ENABLED,
+@unittest.skipUnless(socket_helper.IPV6_ENABLED,
                      'IPv6 support required for this test.')
 class IPv6SysLogHandlerTest(SysLogHandlerTest):
 
@@ -3534,7 +3553,7 @@ class QueueHandlerTest(BaseTest):
     @unittest.skipUnless(hasattr(logging.handlers, 'QueueListener'),
                          'logging.handlers.QueueListener required for this test')
     def test_queue_listener(self):
-        handler = support.TestHandler(support.Matcher())
+        handler = TestHandler(support.Matcher())
         listener = logging.handlers.QueueListener(self.queue, handler)
         listener.start()
         try:
@@ -3550,7 +3569,7 @@ class QueueHandlerTest(BaseTest):
 
         # Now test with respect_handler_level set
 
-        handler = support.TestHandler(support.Matcher())
+        handler = TestHandler(support.Matcher())
         handler.setLevel(logging.CRITICAL)
         listener = logging.handlers.QueueListener(self.queue, handler,
                                                   respect_handler_level=True)
@@ -3639,9 +3658,9 @@ if hasattr(logging.handlers, 'QueueListener'):
 
         @patch.object(logging.handlers.QueueListener, 'handle')
         def test_handle_called_with_mp_queue(self, mock_handle):
-            # Issue 28668: The multiprocessing (mp) module is not functional
+            # bpo-28668: The multiprocessing (mp) module is not functional
             # when the mp.synchronize module cannot be imported.
-            support.import_module('multiprocessing.synchronize')
+            support.skip_if_broken_multiprocessing_synchronize()
             for i in range(self.repeat):
                 log_queue = multiprocessing.Queue()
                 self.setup_and_log(log_queue, '%s_%s' % (self.id(), i))
@@ -3665,9 +3684,9 @@ if hasattr(logging.handlers, 'QueueListener'):
             indicates that messages were not registered on the queue until
             _after_ the QueueListener stopped.
             """
-            # Issue 28668: The multiprocessing (mp) module is not functional
+            # bpo-28668: The multiprocessing (mp) module is not functional
             # when the mp.synchronize module cannot be imported.
-            support.import_module('multiprocessing.synchronize')
+            support.skip_if_broken_multiprocessing_synchronize()
             for i in range(self.repeat):
                 queue = multiprocessing.Queue()
                 self.setup_and_log(queue, '%s_%s' %(self.id(), i))
@@ -3952,6 +3971,19 @@ class FormatterTest(unittest.TestCase):
         f.format(r)
         self.assertEqual(r.asctime, '1993-04-21 08:03:00,123')
 
+    def test_default_msec_format_none(self):
+        class NoMsecFormatter(logging.Formatter):
+            default_msec_format = None
+            default_time_format = '%d/%m/%Y %H:%M:%S'
+
+        r = self.get_record()
+        dt = datetime.datetime(1993, 4, 21, 8, 3, 0, 123, utc)
+        r.created = time.mktime(dt.astimezone(None).timetuple())
+        f = NoMsecFormatter()
+        f.converter = time.gmtime
+        self.assertEqual(f.formatTime(r), '21/04/1993 08:03:00')
+
+
 class TestBufferingFormatter(logging.BufferingFormatter):
     def formatHeader(self, records):
         return '[(%d)' % len(records)
@@ -4161,6 +4193,15 @@ class ModuleLevelMiscTest(BaseTest):
 
         logging.disable(83)
         self.assertEqual(logging.root.manager.disable, 83)
+
+        self.assertRaises(ValueError, logging.disable, "doesnotexists")
+
+        class _NotAnIntOrString:
+            pass
+
+        self.assertRaises(TypeError, logging.disable, _NotAnIntOrString())
+
+        logging.disable("WARN")
 
         # test the default value introduced in 3.7
         # (Issue #28524)
@@ -5025,6 +5066,13 @@ class RotatingFileHandlerTest(BaseFileTest):
         rh = logging.handlers.RotatingFileHandler(self.fn, maxBytes=0)
         self.assertFalse(rh.shouldRollover(None))
         rh.close()
+        # bpo-45401 - test with special file
+        # We set maxBytes to 1 so that rollover would normally happen, except
+        # for the check for regular files
+        rh = logging.handlers.RotatingFileHandler(
+                os.devnull, encoding="utf-8", maxBytes=1)
+        self.assertFalse(rh.shouldRollover(self.next_rec()))
+        rh.close()
 
     def test_should_rollover(self):
         rh = logging.handlers.RotatingFileHandler(self.fn, maxBytes=1)
@@ -5061,7 +5109,7 @@ class RotatingFileHandlerTest(BaseFileTest):
 
             def rotator(self, source, dest):
                 if os.path.exists(source):
-                    os.rename(source, dest + ".rotated")
+                    os.replace(source, dest + ".rotated")
 
         rh = HandlerWithNamerAndRotator(
             self.fn, backupCount=2, maxBytes=1)
@@ -5073,7 +5121,7 @@ class RotatingFileHandlerTest(BaseFileTest):
         self.assertFalse(os.path.exists(rh.namer(self.fn + ".1")))
         rh.close()
 
-    @support.requires_zlib
+    @support.requires_zlib()
     def test_rotator(self):
         def namer(name):
             return name + ".gz"
@@ -5119,6 +5167,15 @@ class RotatingFileHandlerTest(BaseFileTest):
         rh.close()
 
 class TimedRotatingFileHandlerTest(BaseFileTest):
+    def test_should_not_rollover(self):
+        # See bpo-45401. Should only ever rollover regular files
+        fh = logging.handlers.TimedRotatingFileHandler(
+                os.devnull, 'S', encoding="utf-8", backupCount=1)
+        time.sleep(1.1)    # a little over a second ...
+        r = logging.makeLogRecord({'msg': 'testing - device file'})
+        self.assertFalse(fh.shouldRollover(r))
+        fh.close()
+
     # other test methods added below
     def test_rollover(self):
         fh = logging.handlers.TimedRotatingFileHandler(self.fn, 'S',
@@ -5324,25 +5381,11 @@ class MiscTestCase(unittest.TestCase):
 # Set the locale to the platform-dependent default.  I have no idea
 # why the test does this, but in any case we save the current locale
 # first and restore it at the end.
-@support.run_with_locale('LC_ALL', '')
-def test_main():
-    tests = [
-        BuiltinLevelsTest, BasicFilterTest, CustomLevelsAndFiltersTest,
-        HandlerTest, MemoryHandlerTest, ConfigFileTest, SocketHandlerTest,
-        DatagramHandlerTest, MemoryTest, EncodingTest, WarningsTest,
-        ConfigDictTest, ManagerTest, FormatterTest, BufferingFormatterTest,
-        StreamHandlerTest, LogRecordFactoryTest, ChildLoggerTest,
-        QueueHandlerTest, ShutdownTest, ModuleLevelMiscTest, BasicConfigTest,
-        LoggerAdapterTest, LoggerTest, SMTPHandlerTest, FileHandlerTest,
-        RotatingFileHandlerTest,  LastResortTest, LogRecordTest,
-        ExceptionTest, SysLogHandlerTest, IPv6SysLogHandlerTest, HTTPHandlerTest,
-        NTEventLogHandlerTest, TimedRotatingFileHandlerTest,
-        UnixSocketHandlerTest, UnixDatagramHandlerTest, UnixSysLogHandlerTest,
-        MiscTestCase
-    ]
-    if hasattr(logging.handlers, 'QueueListener'):
-        tests.append(QueueListenerTest)
-    support.run_unittest(*tests)
+def setUpModule():
+    cm = support.run_with_locale('LC_ALL', '')
+    cm.__enter__()
+    unittest.addModuleCleanup(cm.__exit__, None, None, None)
+
 
 if __name__ == "__main__":
-    test_main()
+    unittest.main()

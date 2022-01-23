@@ -328,8 +328,15 @@ class TestGzip(BaseTest):
             cmByte = fRead.read(1)
             self.assertEqual(cmByte, b'\x08') # deflate
 
+            try:
+                expectedname = self.filename.encode('Latin-1') + b'\x00'
+                expectedflags = b'\x08' # only the FNAME flag is set
+            except UnicodeEncodeError:
+                expectedname = b''
+                expectedflags = b'\x00'
+
             flagsByte = fRead.read(1)
-            self.assertEqual(flagsByte, b'\x08') # only the FNAME flag is set
+            self.assertEqual(flagsByte, expectedflags)
 
             mtimeBytes = fRead.read(4)
             self.assertEqual(mtimeBytes, struct.pack('<i', mtime)) # little-endian
@@ -344,9 +351,8 @@ class TestGzip(BaseTest):
             # RFC 1952 specifies that this is the name of the input file, if any.
             # However, the gzip module defaults to storing the name of the output
             # file in this field.
-            expected = self.filename.encode('Latin-1') + b'\x00'
-            nameBytes = fRead.read(len(expected))
-            self.assertEqual(nameBytes, expected)
+            nameBytes = fRead.read(len(expectedname))
+            self.assertEqual(nameBytes, expectedname)
 
             # Since no other flags were set, the header ends here.
             # Rather than process the compressed data, let's seek to the trailer.
@@ -357,6 +363,10 @@ class TestGzip(BaseTest):
 
             isizeBytes = fRead.read(4)
             self.assertEqual(isizeBytes, struct.pack('<i', len(data1)))
+
+    def test_metadata_ascii_name(self):
+        self.filename = support.TESTFN_ASCII
+        self.test_metadata()
 
     def test_compresslevel_metadata(self):
         # see RFC 1952: http://www.faqs.org/rfcs/rfc1952.html
@@ -762,10 +772,10 @@ class TestCommandLine(unittest.TestCase):
         self.assertEqual(err, b'')
 
     def test_decompress_infile_outfile_error(self):
-        rc, out, err = assert_python_ok('-m', 'gzip', '-d', 'thisisatest.out')
-        self.assertIn(b"filename doesn't end in .gz:", out)
-        self.assertEqual(rc, 0)
-        self.assertEqual(err, b'')
+        rc, out, err = assert_python_failure('-m', 'gzip', '-d', 'thisisatest.out')
+        self.assertEqual(b"filename doesn't end in .gz: 'thisisatest.out'", err.strip())
+        self.assertEqual(rc, 1)
+        self.assertEqual(out, b'')
 
     @create_and_remove_directory(TEMPDIR)
     def test_compress_stdin_outfile(self):
@@ -821,9 +831,5 @@ class TestCommandLine(unittest.TestCase):
         self.assertEqual(out, b'')
 
 
-def test_main(verbose=None):
-    support.run_unittest(TestGzip, TestOpen, TestCommandLine)
-
-
 if __name__ == "__main__":
-    test_main(verbose=True)
+    unittest.main()

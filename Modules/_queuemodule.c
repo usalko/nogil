@@ -1,8 +1,7 @@
 #include "Python.h"
-#include "structmember.h" /* offsetof */
-#include "pythread.h"
 #include "lock.h"
 #include "parking_lot.h"
+#include <stddef.h>               // offsetof()
 
 /*[clinic input]
 module _queue
@@ -153,15 +152,14 @@ _queue_SimpleQueue_put_impl(simplequeueobject *self, PyObject *item,
     int handoff = 0;
     if (self->waiting) {
         int more_waiters;
-        int should_be_fair;
-        Waiter *waiter;
+        struct wait_entry *waiter;
+        PyObject **objptr;
 
         /* If there is a waiter, handoff the item directly */
-        _PyParkingLot_BeginUnpark(&self->waiting, &waiter, &more_waiters, &should_be_fair);
-        if (waiter) {
-            PyObject **elem = (PyObject **)waiter->handoff_elem;
+        objptr = _PyParkingLot_BeginUnpark(&self->waiting, &waiter, &more_waiters);
+        if (objptr) {
             Py_INCREF(item);
-            *elem = item;
+            *objptr = item;
             handoff = 1;
         }
         self->waiting = more_waiters;
@@ -279,9 +277,7 @@ _queue_SimpleQueue_get_impl(simplequeueobject *self, int block,
             }
         }
 
-        Waiter *this_waiter = _PyParkingLot_ThisWaiter();
-        this_waiter->handoff_elem = (uintptr_t)&item;
-        int ret = _PyParkingLot_Park(&self->waiting, 1, 0, timeout_ns);
+        int ret = _PyParkingLot_Park(&self->waiting, 1, &item, timeout_ns);
         if (ret == PY_PARK_OK) {
             assert(item);
             return item;
@@ -356,6 +352,8 @@ static PyMethodDef simplequeue_methods[] = {
     _QUEUE_SIMPLEQUEUE_PUT_METHODDEF
     _QUEUE_SIMPLEQUEUE_PUT_NOWAIT_METHODDEF
     _QUEUE_SIMPLEQUEUE_QSIZE_METHODDEF
+    {"__class_getitem__",    (PyCFunction)Py_GenericAlias,
+    METH_O|METH_CLASS,       PyDoc_STR("See PEP 585")},
     {NULL,           NULL}              /* sentinel */
 };
 
@@ -444,11 +442,9 @@ PyInit__queue(void)
     if (PyModule_AddObject(m, "Empty", EmptyError) < 0)
         return NULL;
 
-    if (PyType_Ready(&PySimpleQueueType) < 0)
+    if (PyModule_AddType(m, &PySimpleQueueType) < 0) {
         return NULL;
-    Py_INCREF(&PySimpleQueueType);
-    if (PyModule_AddObject(m, "SimpleQueue", (PyObject *)&PySimpleQueueType) < 0)
-        return NULL;
+    }
 
     return m;
 }

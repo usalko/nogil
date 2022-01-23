@@ -32,6 +32,7 @@ __author__ = ('Ka-Ping Yee <ping@lfw.org>',
               'Yury Selivanov <yselivanov@sprymix.com>')
 
 import abc
+import ast
 import dis
 import collections.abc
 import enum
@@ -48,7 +49,7 @@ import warnings
 import functools
 import builtins
 from operator import attrgetter
-from collections import namedtuple
+from collections import namedtuple, OrderedDict
 
 # Create constants for the compiler flags in Include/code.h
 # We try to get them from dis to avoid duplication
@@ -276,7 +277,7 @@ def iscode(object):
         co_kwonlyargcount   number of keyword only arguments (not including ** arg)
         co_lnotab           encoded mapping of line numbers to bytecode indices
         co_name             name with which this code object was defined
-        co_names            tuple of names of local variables
+        co_names            tuple of names other than arguments and function locals
         co_nlocals          number of local variables
         co_stacksize        virtual machine stack space required
         co_varnames         tuple of names of arguments and local variables"""
@@ -735,13 +736,13 @@ def getmodule(object, _filename=None):
     # Try the cache again with the absolute file name
     try:
         file = getabsfile(object, _filename)
-    except TypeError:
+    except (TypeError, FileNotFoundError):
         return None
     if file in modulesbyfile:
         return sys.modules.get(modulesbyfile[file])
     # Update the filename to module name cache and check yet again
     # Copy sys.modules in order to cope with changes while iterating
-    for modname, module in list(sys.modules.items()):
+    for modname, module in sys.modules.copy().items():
         if ismodule(module) and hasattr(module, '__file__'):
             f = module.__file__
             if f == _filesbymodname.get(modname, None):
@@ -768,6 +769,42 @@ def getmodule(object, _filename=None):
         builtinobject = getattr(builtin, object.__name__)
         if builtinobject is object:
             return builtin
+
+
+class ClassFoundException(Exception):
+    pass
+
+
+class _ClassFinder(ast.NodeVisitor):
+
+    def __init__(self, qualname):
+        self.stack = []
+        self.qualname = qualname
+
+    def visit_FunctionDef(self, node):
+        self.stack.append(node.name)
+        self.stack.append('<locals>')
+        self.generic_visit(node)
+        self.stack.pop()
+        self.stack.pop()
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_ClassDef(self, node):
+        self.stack.append(node.name)
+        if self.qualname == '.'.join(self.stack):
+            # Return the decorator for the class if present
+            if node.decorator_list:
+                line_number = node.decorator_list[0].lineno
+            else:
+                line_number = node.lineno
+
+            # decrement by one since lines starts with indexing by zero
+            line_number -= 1
+            raise ClassFoundException(line_number)
+        self.generic_visit(node)
+        self.stack.pop()
+
 
 def findsource(object):
     """Return the entire source file and starting line number for an object.
@@ -801,25 +838,15 @@ def findsource(object):
         return lines, 0
 
     if isclass(object):
-        name = object.__name__
-        pat = re.compile(r'^(\s*)class\s*' + name + r'\b')
-        # make some effort to find the best matching class definition:
-        # use the one with the least indentation, which is the one
-        # that's most probably not inside a function definition.
-        candidates = []
-        for i in range(len(lines)):
-            match = pat.match(lines[i])
-            if match:
-                # if it's at toplevel, it's already the best one
-                if lines[i][0] == 'c':
-                    return lines, i
-                # else add whitespace to candidate list
-                candidates.append((match.group(1), i))
-        if candidates:
-            # this will sort by whitespace, and by line number,
-            # less whitespace first
-            candidates.sort()
-            return lines, candidates[0][1]
+        qualname = object.__qualname__
+        source = ''.join(lines)
+        tree = ast.parse(source)
+        class_finder = _ClassFinder(qualname)
+        try:
+            class_finder.visit(tree)
+        except ClassFoundException as e:
+            line_number = e.args[0]
+            return lines, line_number
         else:
             raise OSError('could not find class definition')
 
@@ -837,7 +864,12 @@ def findsource(object):
         lnum = object.co_firstlineno - 1
         pat = re.compile(r'^(\s*def\s)|(\s*async\s+def\s)|(.*(?<!\w)lambda(:|\s))|^(\s*@)')
         while lnum > 0:
-            if pat.match(lines[lnum]): break
+            try:
+                line = lines[lnum]
+            except IndexError:
+                raise OSError('lineno is out of bounds')
+            if pat.match(line):
+                break
             lnum = lnum - 1
         return lines, lnum
     raise OSError('could not find code object')
@@ -899,6 +931,7 @@ class BlockFinder:
         self.indecorator = False
         self.decoratorhasargs = False
         self.last = 1
+        self.body_col0 = None
 
     def tokeneater(self, type, token, srowcol, erowcol, line):
         if not self.started and not self.indecorator:
@@ -930,6 +963,8 @@ class BlockFinder:
         elif self.passline:
             pass
         elif type == tokenize.INDENT:
+            if self.body_col0 is None and self.started:
+                self.body_col0 = erowcol[1]
             self.indent = self.indent + 1
             self.passline = True
         elif type == tokenize.DEDENT:
@@ -939,6 +974,10 @@ class BlockFinder:
             #  not e.g. for "if: else:" or "try: finally:" blocks)
             if self.indent <= 0:
                 raise EndOfBlock
+        elif type == tokenize.COMMENT:
+            if self.body_col0 is not None and srowcol[1] >= self.body_col0:
+                # Include comments if indented at least as much as the block
+                self.last = srowcol[0]
         elif self.indent == 0 and type not in (tokenize.COMMENT, tokenize.NL):
             # any other token on the same indentation level end the previous
             # block as well, except the pseudo-tokens COMMENT and NL.
@@ -1194,6 +1233,8 @@ def getargvalues(frame):
 def formatannotation(annotation, base_module=None):
     if getattr(annotation, '__module__', None) == 'typing':
         return repr(annotation).replace('typing.', '')
+    if isinstance(annotation, types.GenericAlias):
+        return str(annotation)
     if isinstance(annotation, type):
         if annotation.__module__ in ('builtins', base_module):
             return annotation.__qualname__
@@ -1423,6 +1464,8 @@ def getclosurevars(func):
     unbound_names = set()
     for instr in dis.get_instructions(func):
         if instr.opname not in ("LOAD_GLOBAL", "LOAD_NAME"):
+            # Because these used to be builtins instead of keywords, they
+            # may still show up as name references. We ignore them.
             continue
         name = code.co_consts[instr.imm[0]]
         try:
@@ -1714,7 +1757,7 @@ def _signature_get_partial(wrapped_sig, partial, extra_args=()):
     """
 
     old_params = wrapped_sig.parameters
-    new_params = {}
+    new_params = OrderedDict(old_params.items())
 
     partial_args = partial.args or ()
     partial_keywords = partial.keywords or {}
@@ -1730,7 +1773,6 @@ def _signature_get_partial(wrapped_sig, partial, extra_args=()):
 
 
     transform_to_kwonly = False
-    kwonly_params = {}  # Keyword only parameters are moved to end.
     for param_name, param in old_params.items():
         try:
             arg_value = ba.arguments[param_name]
@@ -1740,6 +1782,7 @@ def _signature_get_partial(wrapped_sig, partial, extra_args=()):
             if param.kind is _POSITIONAL_ONLY:
                 # If positional-only parameter is bound by partial,
                 # it effectively disappears from the signature
+                new_params.pop(param_name)
                 continue
 
             if param.kind is _POSITIONAL_OR_KEYWORD:
@@ -1758,26 +1801,28 @@ def _signature_get_partial(wrapped_sig, partial, extra_args=()):
                     # multiple values.
                     transform_to_kwonly = True
                     # Set the new default value
-                    param = param.replace(default=arg_value)
+                    new_params[param_name] = param.replace(default=arg_value)
                 else:
                     # was passed as a positional argument
+                    new_params.pop(param.name)
                     continue
 
             if param.kind is _KEYWORD_ONLY:
                 # Set the new default value
-                param = param.replace(default=arg_value)
+                new_params[param_name] = param.replace(default=arg_value)
 
         if transform_to_kwonly:
             assert param.kind is not _POSITIONAL_ONLY
 
             if param.kind is _POSITIONAL_OR_KEYWORD:
-                kwonly_params[param_name] = param.replace(kind=_KEYWORD_ONLY)
+                new_param = new_params[param_name].replace(kind=_KEYWORD_ONLY)
+                new_params[param_name] = new_param
+                new_params.move_to_end(param_name)
             elif param.kind in (_KEYWORD_ONLY, _VAR_KEYWORD):
-                kwonly_params[param_name] = param
-        else:
-            new_params[param_name] = param
+                new_params.move_to_end(param_name)
+            elif param.kind is _VAR_POSITIONAL:
+                new_params.pop(param.name)
 
-    new_params.update(kwonly_params)
     return wrapped_sig.replace(parameters=new_params.values())
 
 
@@ -2196,17 +2241,18 @@ def _signature_from_callable(obj, *,
     callable objects.
     """
 
+    _get_signature_of = functools.partial(_signature_from_callable,
+                                follow_wrapper_chains=follow_wrapper_chains,
+                                skip_bound_arg=skip_bound_arg,
+                                sigcls=sigcls)
+
     if not callable(obj):
         raise TypeError('{!r} is not a callable object'.format(obj))
 
     if isinstance(obj, types.MethodType):
         # In this case we skip the first parameter of the underlying
         # function (usually `self` or `cls`).
-        sig = _signature_from_callable(
-            obj.__func__,
-            follow_wrapper_chains=follow_wrapper_chains,
-            skip_bound_arg=skip_bound_arg,
-            sigcls=sigcls)
+        sig = _get_signature_of(obj.__func__)
 
         if skip_bound_arg:
             return _signature_bound_method(sig)
@@ -2220,11 +2266,7 @@ def _signature_from_callable(obj, *,
             # If the unwrapped object is a *method*, we might want to
             # skip its first parameter (self).
             # See test_signature_wrapped_bound_method for details.
-            return _signature_from_callable(
-                obj,
-                follow_wrapper_chains=follow_wrapper_chains,
-                skip_bound_arg=skip_bound_arg,
-                sigcls=sigcls)
+            return _get_signature_of(obj)
 
     try:
         sig = obj.__signature__
@@ -2251,11 +2293,7 @@ def _signature_from_callable(obj, *,
             # (usually `self`, or `cls`) will not be passed
             # automatically (as for boundmethods)
 
-            wrapped_sig = _signature_from_callable(
-                partialmethod.func,
-                follow_wrapper_chains=follow_wrapper_chains,
-                skip_bound_arg=skip_bound_arg,
-                sigcls=sigcls)
+            wrapped_sig = _get_signature_of(partialmethod.func)
 
             sig = _signature_get_partial(wrapped_sig, partialmethod, (None,))
             first_wrapped_param = tuple(wrapped_sig.parameters.values())[0]
@@ -2281,11 +2319,7 @@ def _signature_from_callable(obj, *,
                                        skip_bound_arg=skip_bound_arg)
 
     if isinstance(obj, functools.partial):
-        wrapped_sig = _signature_from_callable(
-            obj.func,
-            follow_wrapper_chains=follow_wrapper_chains,
-            skip_bound_arg=skip_bound_arg,
-            sigcls=sigcls)
+        wrapped_sig = _get_signature_of(obj.func)
         return _signature_get_partial(wrapped_sig, obj)
 
     sig = None
@@ -2296,29 +2330,25 @@ def _signature_from_callable(obj, *,
         # in its metaclass
         call = _signature_get_user_defined_method(type(obj), '__call__')
         if call is not None:
-            sig = _signature_from_callable(
-                call,
-                follow_wrapper_chains=follow_wrapper_chains,
-                skip_bound_arg=skip_bound_arg,
-                sigcls=sigcls)
+            sig = _get_signature_of(call)
         else:
-            # Now we check if the 'obj' class has a '__new__' method
+            factory_method = None
             new = _signature_get_user_defined_method(obj, '__new__')
-            if new is not None:
-                sig = _signature_from_callable(
-                    new,
-                    follow_wrapper_chains=follow_wrapper_chains,
-                    skip_bound_arg=skip_bound_arg,
-                    sigcls=sigcls)
-            else:
-                # Finally, we should have at least __init__ implemented
-                init = _signature_get_user_defined_method(obj, '__init__')
-                if init is not None:
-                    sig = _signature_from_callable(
-                        init,
-                        follow_wrapper_chains=follow_wrapper_chains,
-                        skip_bound_arg=skip_bound_arg,
-                        sigcls=sigcls)
+            init = _signature_get_user_defined_method(obj, '__init__')
+            # Now we check if the 'obj' class has an own '__new__' method
+            if '__new__' in obj.__dict__:
+                factory_method = new
+            # or an own '__init__' method
+            elif '__init__' in obj.__dict__:
+                factory_method = init
+            # If not, we take inherited '__new__' or '__init__', if present
+            elif new is not None:
+                factory_method = new
+            elif init is not None:
+                factory_method = init
+
+            if factory_method is not None:
+                sig = _get_signature_of(factory_method)
 
         if sig is None:
             # At this point we know, that `obj` is a class, with no user-
@@ -2364,11 +2394,7 @@ def _signature_from_callable(obj, *,
         call = _signature_get_user_defined_method(type(obj), '__call__')
         if call is not None:
             try:
-                sig = _signature_from_callable(
-                    call,
-                    follow_wrapper_chains=follow_wrapper_chains,
-                    skip_bound_arg=skip_bound_arg,
-                    sigcls=sigcls)
+                sig = _get_signature_of(call)
             except ValueError as ex:
                 msg = 'no signature found for {!r}'.format(obj)
                 raise ValueError(msg) from ex
@@ -2718,7 +2744,7 @@ class Signature:
 
     A Signature object has the following public attributes and methods:
 
-    * parameters : dict
+    * parameters : OrderedDict
         An ordered mapping of parameters' names to the corresponding
         Parameter objects (keyword-only arguments are in the same order
         as listed in `code.co_varnames`).
@@ -2748,10 +2774,10 @@ class Signature:
         """
 
         if parameters is None:
-            params = {}
+            params = OrderedDict()
         else:
             if __validate_parameters__:
-                params = {}
+                params = OrderedDict()
                 top_kind = _POSITIONAL_ONLY
                 kind_defaults = False
 
@@ -2790,7 +2816,7 @@ class Signature:
 
                     params[name] = param
             else:
-                params = {param.name: param for param in parameters}
+                params = OrderedDict((param.name, param) for param in parameters)
 
         self._parameters = types.MappingProxyType(params)
         self._return_annotation = return_annotation

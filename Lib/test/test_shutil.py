@@ -33,7 +33,10 @@ from test import support
 from test.support import TESTFN, FakePath
 
 TESTFN2 = TESTFN + "2"
+TESTFN_SRC = TESTFN + "_SRC"
+TESTFN_DST = TESTFN + "_DST"
 MACOS = sys.platform.startswith("darwin")
+SOLARIS = sys.platform.startswith("sunos")
 AIX = sys.platform[:3] == 'aix'
 try:
     import grp
@@ -1144,6 +1147,28 @@ class TestCopy(BaseTest, unittest.TestCase):
             rv = fn(src, os.path.join(dst_dir, 'bar'))
             self.assertEqual(rv, os.path.join(dst_dir, 'bar'))
 
+    def test_copy_dir(self):
+        self._test_copy_dir(shutil.copy)
+
+    def test_copy2_dir(self):
+        self._test_copy_dir(shutil.copy2)
+
+    def _test_copy_dir(self, copy_func):
+        src_dir = self.mkdtemp()
+        src_file = os.path.join(src_dir, 'foo')
+        dir2 = self.mkdtemp()
+        dst = os.path.join(src_dir, 'does_not_exist/')
+        write_file(src_file, 'foo')
+        if sys.platform == "win32":
+            err = PermissionError
+        else:
+            err = IsADirectoryError
+        self.assertRaises(err, copy_func, dir2, src_dir)
+
+        # raise *err* because of src rather than FileNotFoundError because of dst
+        self.assertRaises(err, copy_func, dir2, dst)
+        copy_func(src_file, dir2)     # should not raise exceptions
+
     ### shutil.copyfile
 
     @support.skip_unless_symlink
@@ -1241,12 +1266,39 @@ class TestCopy(BaseTest, unittest.TestCase):
         # Make sure file is not corrupted.
         self.assertEqual(read_file(src_file), 'foo')
 
+    @unittest.skipIf(MACOS or SOLARIS or _winapi, 'On MACOS, Solaris and Windows the errors are not confusing (though different)')
+    def test_copyfile_nonexistent_dir(self):
+        # Issue 43219
+        src_dir = self.mkdtemp()
+        src_file = os.path.join(src_dir, 'foo')
+        dst = os.path.join(src_dir, 'does_not_exist/')
+        write_file(src_file, 'foo')
+        self.assertRaises(FileNotFoundError, shutil.copyfile, src_file, dst)
+
+    def test_copyfile_copy_dir(self):
+        # Issue 45234
+        # test copy() and copyfile() raising proper exceptions when src and/or
+        # dst are directories
+        src_dir = self.mkdtemp()
+        src_file = os.path.join(src_dir, 'foo')
+        dir2 = self.mkdtemp()
+        dst = os.path.join(src_dir, 'does_not_exist/')
+        write_file(src_file, 'foo')
+        if sys.platform == "win32":
+            err = PermissionError
+        else:
+            err = IsADirectoryError
+
+        self.assertRaises(err, shutil.copyfile, src_dir, dst)
+        self.assertRaises(err, shutil.copyfile, src_file, src_dir)
+        self.assertRaises(err, shutil.copyfile, dir2, src_dir)
+
 
 class TestArchives(BaseTest, unittest.TestCase):
 
     ### shutil.make_archive
 
-    @support.requires_zlib
+    @support.requires_zlib()
     def test_make_tarball(self):
         # creating something to tar
         root_dir, base_dir = self._create_files('')
@@ -1302,7 +1354,7 @@ class TestArchives(BaseTest, unittest.TestCase):
             write_file((root_dir, 'outer'), 'xxx')
         return root_dir, base_dir
 
-    @support.requires_zlib
+    @support.requires_zlib()
     @unittest.skipUnless(shutil.which('tar'),
                          'Need the tar command to run')
     def test_tarfile_vs_tar(self):
@@ -1335,7 +1387,7 @@ class TestArchives(BaseTest, unittest.TestCase):
         self.assertEqual(tarball, base_name + '.tar')
         self.assertTrue(os.path.isfile(tarball))
 
-    @support.requires_zlib
+    @support.requires_zlib()
     def test_make_zipfile(self):
         # creating something to zip
         root_dir, base_dir = self._create_files()
@@ -1372,7 +1424,7 @@ class TestArchives(BaseTest, unittest.TestCase):
                     ['dist/', 'dist/sub/', 'dist/sub2/',
                      'dist/file1', 'dist/file2', 'dist/sub/file3'])
 
-    @support.requires_zlib
+    @support.requires_zlib()
     @unittest.skipUnless(shutil.which('zip'),
                          'Need the zip command to run')
     def test_zipfile_vs_zip(self):
@@ -1398,7 +1450,7 @@ class TestArchives(BaseTest, unittest.TestCase):
             names2 = zf.namelist()
         self.assertEqual(sorted(names), sorted(names2))
 
-    @support.requires_zlib
+    @support.requires_zlib()
     @unittest.skipUnless(shutil.which('unzip'),
                          'Need the unzip command to run')
     def test_unzip_zipfile(self):
@@ -1427,7 +1479,7 @@ class TestArchives(BaseTest, unittest.TestCase):
         base_name = os.path.join(tmpdir, 'archive')
         self.assertRaises(ValueError, make_archive, base_name, 'xxx')
 
-    @support.requires_zlib
+    @support.requires_zlib()
     def test_make_archive_owner_group(self):
         # testing make_archive with owner and group, with various combinations
         # this works even if there's not gid/uid support
@@ -1455,7 +1507,7 @@ class TestArchives(BaseTest, unittest.TestCase):
         self.assertTrue(os.path.isfile(res))
 
 
-    @support.requires_zlib
+    @support.requires_zlib()
     @unittest.skipUnless(UID_GID_SUPPORT, "Requires grp and pwd support")
     def test_tarfile_root_owner(self):
         root_dir, base_dir = self._create_files()
@@ -1500,7 +1552,7 @@ class TestArchives(BaseTest, unittest.TestCase):
             self.assertEqual(make_archive('test', 'tar'), 'test.tar')
             self.assertTrue(os.path.isfile('test.tar'))
 
-    @support.requires_zlib
+    @support.requires_zlib()
     def test_make_zipfile_in_curdir(self):
         # Issue #21280
         root_dir = self.mkdtemp()
@@ -1555,20 +1607,20 @@ class TestArchives(BaseTest, unittest.TestCase):
     def test_unpack_archive_tar(self):
         self.check_unpack_archive('tar')
 
-    @support.requires_zlib
+    @support.requires_zlib()
     def test_unpack_archive_gztar(self):
         self.check_unpack_archive('gztar')
 
-    @support.requires_bz2
+    @support.requires_bz2()
     def test_unpack_archive_bztar(self):
         self.check_unpack_archive('bztar')
 
-    @support.requires_lzma
+    @support.requires_lzma()
     @unittest.skipIf(AIX and not _maxdataOK(), "AIX MAXDATA must be 0x20000000 or larger")
     def test_unpack_archive_xztar(self):
         self.check_unpack_archive('xztar')
 
-    @support.requires_zlib
+    @support.requires_zlib()
     def test_unpack_archive_zip(self):
         self.check_unpack_archive('zip')
 
@@ -1666,12 +1718,17 @@ class TestMisc(BaseTest, unittest.TestCase):
         shutil.chown(dirname, group=gid)
         check_chown(dirname, gid=gid)
 
-        user = pwd.getpwuid(uid)[0]
-        group = grp.getgrgid(gid)[0]
-        shutil.chown(filename, user, group)
-        check_chown(filename, uid, gid)
-        shutil.chown(dirname, user, group)
-        check_chown(dirname, uid, gid)
+        try:
+            user = pwd.getpwuid(uid)[0]
+            group = grp.getgrgid(gid)[0]
+        except KeyError:
+            # On some systems uid/gid cannot be resolved.
+            pass
+        else:
+            shutil.chown(filename, user, group)
+            check_chown(filename, uid, gid)
+            shutil.chown(dirname, user, group)
+            check_chown(dirname, uid, gid)
 
 
 class TestWhich(BaseTest, unittest.TestCase):
@@ -1840,6 +1897,23 @@ class TestWhich(BaseTest, unittest.TestCase):
 
         with support.EnvironmentVarGuard() as env:
             env['PATHEXT'] = ext
+            rv = shutil.which(program, path=self.temp_dir)
+            self.assertEqual(rv, temp_filexyz.name)
+
+    # Issue 40592: See https://bugs.python.org/issue40592
+    @unittest.skipUnless(sys.platform == "win32", 'test specific to Windows')
+    def test_pathext_with_empty_str(self):
+        ext = ".xyz"
+        temp_filexyz = tempfile.NamedTemporaryFile(dir=self.temp_dir,
+                                                   prefix="Tmp2", suffix=ext)
+        self.addCleanup(temp_filexyz.close)
+
+        # strip path and extension
+        program = os.path.basename(temp_filexyz.name)
+        program = os.path.splitext(program)[0]
+
+        with support.EnvironmentVarGuard() as env:
+            env['PATHEXT'] = f"{ext};"  # note the ;
             rv = shutil.which(program, path=self.temp_dir)
             self.assertEqual(rv, temp_filexyz.name)
 
@@ -2059,6 +2133,41 @@ class TestMove(BaseTest, unittest.TestCase):
             self.assertTrue(os.path.isdir(dst_dir))
         finally:
             os.rmdir(dst_dir)
+
+
+    @unittest.skipUnless(hasattr(os, 'geteuid') and os.geteuid() == 0
+                         and hasattr(os, 'lchflags')
+                         and hasattr(stat, 'SF_IMMUTABLE')
+                         and hasattr(stat, 'UF_OPAQUE'),
+                         'root privileges required')
+    def test_move_dir_permission_denied(self):
+        # bpo-42782: shutil.move should not create destination directories
+        # if the source directory cannot be removed.
+        try:
+            os.mkdir(TESTFN_SRC)
+            os.lchflags(TESTFN_SRC, stat.SF_IMMUTABLE)
+
+            # Testing on an empty immutable directory
+            # TESTFN_DST should not exist if shutil.move failed
+            self.assertRaises(PermissionError, shutil.move, TESTFN_SRC, TESTFN_DST)
+            self.assertFalse(TESTFN_DST in os.listdir())
+
+            # Create a file and keep the directory immutable
+            os.lchflags(TESTFN_SRC, stat.UF_OPAQUE)
+            os_helper.create_empty_file(os.path.join(TESTFN_SRC, 'child'))
+            os.lchflags(TESTFN_SRC, stat.SF_IMMUTABLE)
+
+            # Testing on a non-empty immutable directory
+            # TESTFN_DST should not exist if shutil.move failed
+            self.assertRaises(PermissionError, shutil.move, TESTFN_SRC, TESTFN_DST)
+            self.assertFalse(TESTFN_DST in os.listdir())
+        finally:
+            if os.path.exists(TESTFN_SRC):
+                os.lchflags(TESTFN_SRC, stat.UF_OPAQUE)
+                os_helper.rmtree(TESTFN_SRC)
+            if os.path.exists(TESTFN_DST):
+                os.lchflags(TESTFN_DST, stat.UF_OPAQUE)
+                os_helper.rmtree(TESTFN_DST)
 
 
 class TestCopyFile(unittest.TestCase):

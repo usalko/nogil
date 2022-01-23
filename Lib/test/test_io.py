@@ -69,6 +69,14 @@ MEMORY_SANITIZER = (
     '--with-memory-sanitizer' in _config_args
 )
 
+ADDRESS_SANITIZER = (
+    '-fsanitize=address' in _cflags
+)
+
+# Does io.IOBase finalizer log the exception if the close() method fails?
+# The exception is ignored silently by default in release build.
+IOBASE_EMITS_UNRAISABLE = (hasattr(sys, "gettotalrefcount") or sys.flags.dev_mode)
+
 
 def _default_chunk_size():
     """Get the default TextIOWrapper chunk size"""
@@ -920,7 +928,7 @@ class IOTest(unittest.TestCase):
                 self.assertEqual(f.read(), "egg\n")
 
         check_path_succeeds(FakePath(support.TESTFN))
-        check_path_succeeds(FakePath(support.TESTFN.encode('utf-8')))
+        check_path_succeeds(FakePath(os.fsencode(support.TESTFN)))
 
         with self.open(support.TESTFN, "w") as f:
             bad_path = FakePath(f.fileno())
@@ -1525,11 +1533,18 @@ class BufferedReaderTest(unittest.TestCase, CommonBufferedTests):
         self.assertRaises(ValueError, b.peek)
         self.assertRaises(ValueError, b.read1, 1)
 
+    def test_truncate_on_read_only(self):
+        rawio = self.MockFileIO(b"abc")
+        bufio = self.tp(rawio)
+        self.assertFalse(bufio.writable())
+        self.assertRaises(self.UnsupportedOperation, bufio.truncate)
+        self.assertRaises(self.UnsupportedOperation, bufio.truncate, 0)
+
 
 class CBufferedReaderTest(BufferedReaderTest, SizeofTest):
     tp = io.BufferedReader
 
-    @unittest.skipIf(MEMORY_SANITIZER, "MSan defaults to crashing "
+    @unittest.skipIf(MEMORY_SANITIZER or ADDRESS_SANITIZER, "sanitizer defaults to crashing "
                      "instead of returning NULL for malloc failure.")
     def test_constructor(self):
         BufferedReaderTest.test_constructor(self)
@@ -1881,7 +1896,7 @@ class BufferedWriterTest(unittest.TestCase, CommonBufferedTests):
 class CBufferedWriterTest(BufferedWriterTest, SizeofTest):
     tp = io.BufferedWriter
 
-    @unittest.skipIf(MEMORY_SANITIZER, "MSan defaults to crashing "
+    @unittest.skipIf(MEMORY_SANITIZER or ADDRESS_SANITIZER, "sanitizer defaults to crashing "
                      "instead of returning NULL for malloc failure.")
     def test_constructor(self):
         BufferedWriterTest.test_constructor(self)
@@ -2377,11 +2392,15 @@ class BufferedRandomTest(BufferedReaderTest, BufferedWriterTest):
     # You can't construct a BufferedRandom over a non-seekable stream.
     test_unseekable = None
 
+    # writable() returns True, so there's no point to test it over
+    # a writable stream.
+    test_truncate_on_read_only = None
+
 
 class CBufferedRandomTest(BufferedRandomTest, SizeofTest):
     tp = io.BufferedRandom
 
-    @unittest.skipIf(MEMORY_SANITIZER, "MSan defaults to crashing "
+    @unittest.skipIf(MEMORY_SANITIZER or ADDRESS_SANITIZER, "sanitizer defaults to crashing "
                      "instead of returning NULL for malloc failure.")
     def test_constructor(self):
         BufferedRandomTest.test_constructor(self)
@@ -3737,6 +3756,33 @@ class CTextIOWrapperTest(TextIOWrapperTest):
         with self.assertRaises(AttributeError):
             del t._CHUNK_SIZE
 
+    def test_internal_buffer_size(self):
+        # bpo-43260: TextIOWrapper's internal buffer should not store
+        # data larger than chunk size.
+        chunk_size = 8192  # default chunk size, updated later
+
+        class MockIO(self.MockRawIO):
+            def write(self, data):
+                if len(data) > chunk_size:
+                    raise RuntimeError
+                return super().write(data)
+
+        buf = MockIO()
+        t = self.TextIOWrapper(buf, encoding="ascii")
+        chunk_size = t._CHUNK_SIZE
+        t.write("abc")
+        t.write("def")
+        # default chunk size is 8192 bytes so t don't write data to buf.
+        self.assertEqual([], buf._write_stack)
+
+        with self.assertRaises(RuntimeError):
+            t.write("x"*(chunk_size+1))
+
+        self.assertEqual([b"abcdef"], buf._write_stack)
+        t.write("ghi")
+        t.write("x"*chunk_size)
+        self.assertEqual([b"abcdef", b"ghi", b"x"*chunk_size], buf._write_stack)
+
 
 class PyTextIOWrapperTest(TextIOWrapperTest):
     io = pyio
@@ -3890,6 +3936,16 @@ class MiscIOTest(unittest.TestCase):
         self.assertEqual(f.mode, "wb")
         f.close()
 
+        with support.check_warnings(('', DeprecationWarning)):
+            f = self.open(support.TESTFN, "U")
+        self.assertEqual(f.name,            support.TESTFN)
+        self.assertEqual(f.buffer.name,     support.TESTFN)
+        self.assertEqual(f.buffer.raw.name, support.TESTFN)
+        self.assertEqual(f.mode,            "U")
+        self.assertEqual(f.buffer.mode,     "rb")
+        self.assertEqual(f.buffer.raw.mode, "rb")
+        f.close()
+
         f = self.open(support.TESTFN, "w+")
         self.assertEqual(f.mode,            "w+")
         self.assertEqual(f.buffer.mode,     "rb+") # Does it really matter?
@@ -3902,13 +3958,6 @@ class MiscIOTest(unittest.TestCase):
         self.assertEqual(g.raw.name, f.fileno())
         f.close()
         g.close()
-
-    def test_removed_u_mode(self):
-        # "U" mode has been removed in Python 3.9
-        for mode in ("U", "rU", "r+U"):
-            with self.assertRaises(ValueError) as cm:
-                self.open(support.TESTFN, mode)
-            self.assertIn('invalid mode', str(cm.exception))
 
     def test_open_pipe_with_append(self):
         # bpo-27805: Ignore ESPIPE from lseek() in open().
@@ -4234,7 +4283,8 @@ class CMiscIOTest(MiscIOTest):
         err = res.err.decode()
         if res.rc != 0:
             # Failure: should be a fatal error
-            pattern = (r"Fatal Python error: could not acquire lock "
+            pattern = (r"Fatal Python error: _enter_buffered_busy: "
+                       r"could not acquire lock "
                        r"for <(_io\.)?BufferedWriter name='<{stream_name}>'> "
                        r"at interpreter shutdown, possibly due to "
                        r"daemon threads".format_map(locals()))
@@ -4269,6 +4319,31 @@ class SignalsTest(unittest.TestCase):
         """Check that a partial write, when it gets interrupted, properly
         invokes the signal handler, and bubbles up the exception raised
         in the latter."""
+
+        # XXX This test has three flaws that appear when objects are
+        # XXX not reference counted.
+
+        # - if wio.write() happens to trigger a garbage collection,
+        #   the signal exception may be raised when some __del__
+        #   method is running; it will not reach the assertRaises()
+        #   call.
+
+        # - more subtle, if the wio object is not destroyed at once
+        #   and survives this function, the next opened file is likely
+        #   to have the same fileno (since the file descriptor was
+        #   actively closed).  When wio.__del__ is finally called, it
+        #   will close the other's test file...  To trigger this with
+        #   CPython, try adding "global wio" in this function.
+
+        # - This happens only for streams created by the _pyio module,
+        #   because a wio.close() that fails still consider that the
+        #   file needs to be closed again.  You can try adding an
+        #   "assert wio.closed" at the end of the function.
+
+        # Fortunately, a little gc.collect() seems to be enough to
+        # work around all these issues.
+        support.gc_collect()  # For PyPy or other GCs.
+
         read_results = []
         def _read():
             s = os.read(r, 1)

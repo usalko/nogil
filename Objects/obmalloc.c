@@ -1,8 +1,10 @@
 #include "Python.h"
+#include "pycore_interp.h"
 #include "pycore_pyerrors.h"
 #include "pycore_pymem.h"
 #include "pycore_pystate.h"
 #include "pycore_gc.h"
+#include "pycore_object.h"
 
 #include <stdbool.h>
 #include "mimalloc.h"
@@ -29,42 +31,9 @@ static void* _PyMem_DebugRealloc(void *ctx, void *ptr, size_t size);
 static void _PyMem_DebugFree(void *ctx, void *p);
 
 static void _PyObject_DebugDumpAddress(const void *p);
-static void _PyMem_DebugCheckAddress(char api_id, const void *p);
+static void _PyMem_DebugCheckAddress(const char *func, char api_id, const void *p);
 
 static void _PyMem_SetupDebugHooksDomain(PyMemAllocatorDomain domain);
-
-#if defined(__has_feature)  /* Clang */
-#  if __has_feature(address_sanitizer) /* is ASAN enabled? */
-#    define _Py_NO_SANITIZE_ADDRESS \
-        __attribute__((no_sanitize("address")))
-#  endif
-#  if __has_feature(thread_sanitizer)  /* is TSAN enabled? */
-#    define _Py_NO_SANITIZE_THREAD __attribute__((no_sanitize_thread))
-#  endif
-#  if __has_feature(memory_sanitizer)  /* is MSAN enabled? */
-#    define _Py_NO_SANITIZE_MEMORY __attribute__((no_sanitize_memory))
-#  endif
-#elif defined(__GNUC__)
-#  if defined(__SANITIZE_ADDRESS__)    /* GCC 4.8+, is ASAN enabled? */
-#    define _Py_NO_SANITIZE_ADDRESS \
-        __attribute__((no_sanitize_address))
-#  endif
-   // TSAN is supported since GCC 5.1, but __SANITIZE_THREAD__ macro
-   // is provided only since GCC 7.
-#  if __GNUC__ > 5 || (__GNUC__ == 5 && __GNUC_MINOR__ >= 1)
-#    define _Py_NO_SANITIZE_THREAD __attribute__((no_sanitize_thread))
-#  endif
-#endif
-
-#ifndef _Py_NO_SANITIZE_ADDRESS
-#  define _Py_NO_SANITIZE_ADDRESS
-#endif
-#ifndef _Py_NO_SANITIZE_THREAD
-#  define _Py_NO_SANITIZE_THREAD
-#endif
-#ifndef _Py_NO_SANITIZE_MEMORY
-#  define _Py_NO_SANITIZE_MEMORY
-#endif
 
 #ifdef WITH_PYMALLOC
 
@@ -531,21 +500,6 @@ PyMem_Free(void *ptr)
     a->free(a->ctx, ptr);
 }
 
-PyObject **
-PyMem_ArrayMalloc(size_t size, size_t *usable)
-{
-    PyThreadState *tstate = _PyThreadState_GET();
-    mi_heap_t *heap = tstate->heaps[mi_heap_tag_list_array];
-    return mi_heap_malloc_array(heap, size, usable);
-}
-
-
-void
-PyMem_ArrayFree(void* ptr)
-{
-    mi_free(ptr);
-}
-
 
 wchar_t*
 _PyMem_RawWcsdup(const wchar_t *str)
@@ -623,14 +577,13 @@ void PyObject_Free(void *ptr) {
         a->free(a->ctx, ptr);
         return;
     }
-    return _PyObject_Free(NULL, ptr);
+    _PyObject_Free(NULL, ptr);
 }
 
-static inline PyObject *
+static PyObject *
 _PyObject_GC_Alloc(int use_calloc, size_t basicsize)
 {
     PyThreadState *tstate = _PyThreadState_GET();
-    struct _gc_runtime_state *gcstate = &tstate->interp->gc;
     if (basicsize > PY_SSIZE_T_MAX - sizeof(PyGC_Head)) {
         return _PyErr_NoMemory(tstate);
     }
@@ -652,11 +605,7 @@ _PyObject_GC_Alloc(int use_calloc, size_t basicsize)
     g->_gc_next = 0;
     g->_gc_prev = 0;
 
-    if (_PyGC_ShouldCollect(gcstate)) {
-        _PyGC_Collect(tstate);
-    }
-
-    PyObject *op = _Py_FROM_GC(g);
+    PyObject *op = _PyObject_FROM_GC(g);
     return op;
 }
 
@@ -712,7 +661,7 @@ _PyObject_GC_Resize(PyVarObject *op, Py_ssize_t nitems)
     g = (PyGC_Head *)a->realloc(a->ctx, g, sizeof(PyGC_Head) + basicsize);
     if (g == NULL)
         return (PyVarObject *)PyErr_NoMemory();
-    op = (PyVarObject *) _Py_FROM_GC(g);
+    op = (PyVarObject *) _PyObject_FROM_GC(g);
     Py_SIZE(op) = nitems;
     return op;
 }
@@ -721,10 +670,7 @@ void
 PyObject_GC_Del(void *op)
 {
     PyGC_Head *g = _Py_AS_GC(op);
-    if (_PY_UNLIKELY(g->_gc_next != 0)) {
-        assert(_PyThreadState_GET()->interp->gc.collecting);
-        gc_list_remove(g);
-    }
+    assert(g->_gc_next == 0);
     PyMemAllocatorEx *a = &allocators[PYMEM_DOMAIN_GC];
     a->free(a->ctx, g);
 }
@@ -997,7 +943,7 @@ _PyMem_DebugRawFree(void *ctx, void *p)
     uint8_t *q = (uint8_t *)p - 2*SST;  /* address returned from malloc */
     size_t nbytes;
 
-    _PyMem_DebugCheckAddress(api->api_id, p);
+    _PyMem_DebugCheckAddress(__func__, api->api_id, p);
     nbytes = read_size_prefix(q);
     nbytes += PYMEM_DEBUG_EXTRA_BYTES;
     memset(q, PYMEM_DEADBYTE, nbytes);
@@ -1024,7 +970,7 @@ _PyMem_DebugRawRealloc(void *ctx, void *p, size_t nbytes)
 #define ERASED_SIZE 64
     uint8_t save[2*ERASED_SIZE];  /* A copy of erased bytes. */
 
-    _PyMem_DebugCheckAddress(api->api_id, p);
+    _PyMem_DebugCheckAddress(__func__, api->api_id, p);
 
     data = (uint8_t *)p;
     head = data - 2*SST;
@@ -1109,25 +1055,26 @@ _PyMem_DebugRawRealloc(void *ctx, void *p, size_t nbytes)
 }
 
 static inline void
-_PyMem_DebugCheckGIL(void)
+_PyMem_DebugCheckGIL(const char *func)
 {
     if (!PyGILState_Check()) {
-        Py_FatalError("Python memory allocator called "
-                      "without holding the GIL");
+        _Py_FatalErrorFunc(func,
+                           "Python memory allocator called "
+                           "without holding the GIL");
     }
 }
 
 static void *
 _PyMem_DebugMalloc(void *ctx, size_t nbytes)
 {
-    _PyMem_DebugCheckGIL();
+    _PyMem_DebugCheckGIL(__func__);
     return _PyMem_DebugRawMalloc(ctx, nbytes);
 }
 
 static void *
 _PyMem_DebugCalloc(void *ctx, size_t nelem, size_t elsize)
 {
-    _PyMem_DebugCheckGIL();
+    _PyMem_DebugCheckGIL(__func__);
     return _PyMem_DebugRawCalloc(ctx, nelem, elsize);
 }
 
@@ -1135,7 +1082,7 @@ _PyMem_DebugCalloc(void *ctx, size_t nelem, size_t elsize)
 static void
 _PyMem_DebugFree(void *ctx, void *ptr)
 {
-    _PyMem_DebugCheckGIL();
+    _PyMem_DebugCheckGIL(__func__);
     _PyMem_DebugRawFree(ctx, ptr);
 }
 
@@ -1143,7 +1090,7 @@ _PyMem_DebugFree(void *ctx, void *ptr)
 static void *
 _PyMem_DebugRealloc(void *ctx, void *ptr, size_t nbytes)
 {
-    _PyMem_DebugCheckGIL();
+    _PyMem_DebugCheckGIL(__func__);
     return _PyMem_DebugRawRealloc(ctx, ptr, nbytes);
 }
 
@@ -1153,28 +1100,24 @@ _PyMem_DebugRealloc(void *ctx, void *ptr, size_t nbytes)
  * The API id, is also checked.
  */
 static void
-_PyMem_DebugCheckAddress(char api, const void *p)
+_PyMem_DebugCheckAddress(const char *func, char api, const void *p)
 {
+    assert(p != NULL);
+
     const uint8_t *q = (const uint8_t *)p;
-    char msgbuf[64];
-    const char *msg;
     size_t nbytes;
     const uint8_t *tail;
     int i;
     char id;
 
-    if (p == NULL) {
-        msg = "didn't expect a NULL pointer";
-        goto error;
-    }
-
     /* Check the API id */
     id = (char)q[-SST];
     if (id != api) {
-        msg = msgbuf;
-        snprintf(msgbuf, sizeof(msgbuf), "bad ID: Allocated using API '%c', verified using API '%c'", id, api);
-        msgbuf[sizeof(msgbuf)-1] = 0;
-        goto error;
+        _PyObject_DebugDumpAddress(p);
+        _Py_FatalErrorFormat(func,
+                             "bad ID: Allocated using API '%c', "
+                             "verified using API '%c'",
+                             id, api);
     }
 
     /* Check the stuff at the start of p first:  if there's underwrite
@@ -1183,8 +1126,8 @@ _PyMem_DebugCheckAddress(char api, const void *p)
      */
     for (i = SST-1; i >= 1; --i) {
         if (*(q-i) != PYMEM_FORBIDDENBYTE) {
-            msg = "bad leading pad byte";
-            goto error;
+            _PyObject_DebugDumpAddress(p);
+            _Py_FatalErrorFunc(func, "bad leading pad byte");
         }
     }
 
@@ -1192,16 +1135,10 @@ _PyMem_DebugCheckAddress(char api, const void *p)
     tail = q + nbytes;
     for (i = 0; i < SST; ++i) {
         if (tail[i] != PYMEM_FORBIDDENBYTE) {
-            msg = "bad trailing pad byte";
-            goto error;
+            _PyObject_DebugDumpAddress(p);
+            _Py_FatalErrorFunc(func, "bad trailing pad byte");
         }
     }
-
-    return;
-
-error:
-    _PyObject_DebugDumpAddress(p);
-    Py_FatalError(msg);
 }
 
 /* Display info to stderr about the memory block at p. */

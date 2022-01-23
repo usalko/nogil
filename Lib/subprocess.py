@@ -326,7 +326,7 @@ def _args_from_interpreter_flags():
     if dev_mode:
         args.extend(('-X', 'dev'))
     for opt in ('faulthandler', 'tracemalloc', 'importtime',
-                'showrefcount', 'utf8'):
+                'showrefcount', 'utf8', 'oldparser'):
         if opt in xoptions:
             value = xoptions[opt]
             if value is True:
@@ -415,7 +415,11 @@ def check_output(*popenargs, timeout=None, **kwargs):
     if 'input' in kwargs and kwargs['input'] is None:
         # Explicitly passing input=None was previously equivalent to passing an
         # empty string. That is maintained here for backwards compatibility.
-        kwargs['input'] = '' if kwargs.get('universal_newlines', False) else b''
+        if kwargs.get('universal_newlines') or kwargs.get('text'):
+            empty = ''
+        else:
+            empty = b''
+        kwargs['input'] = empty
 
     return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
                **kwargs).stdout
@@ -985,7 +989,7 @@ class Popen(object):
     def __repr__(self):
         obj_repr = (
             f"<{self.__class__.__name__}: "
-            f"returncode: {self.returncode} args: {list(self.args)!r}>"
+            f"returncode: {self.returncode} args: {self.args!r}>"
         )
         if len(obj_repr) > 80:
             obj_repr = obj_repr[:76] + "...>"
@@ -1521,10 +1525,8 @@ class Popen(object):
                 self.stderr.close()
 
             # All data exchanged.  Translate lists into strings.
-            if stdout is not None:
-                stdout = stdout[0]
-            if stderr is not None:
-                stderr = stderr[0]
+            stdout = stdout[0] if stdout else None
+            stderr = stderr[0] if stderr else None
 
             return (stdout, stderr)
 
@@ -1820,23 +1822,17 @@ class Popen(object):
                 raise child_exception_type(err_msg)
 
 
-        def _handle_exitstatus(self, sts, _WIFSIGNALED=os.WIFSIGNALED,
-                _WTERMSIG=os.WTERMSIG, _WIFEXITED=os.WIFEXITED,
-                _WEXITSTATUS=os.WEXITSTATUS, _WIFSTOPPED=os.WIFSTOPPED,
-                _WSTOPSIG=os.WSTOPSIG):
+        def _handle_exitstatus(self, sts,
+                               waitstatus_to_exitcode=os.waitstatus_to_exitcode,
+                               _WIFSTOPPED=os.WIFSTOPPED,
+                               _WSTOPSIG=os.WSTOPSIG):
             """All callers to this function MUST hold self._waitpid_lock."""
             # This method is called (indirectly) by __del__, so it cannot
             # refer to anything outside of its local scope.
-            if _WIFSIGNALED(sts):
-                self.returncode = -_WTERMSIG(sts)
-            elif _WIFEXITED(sts):
-                self.returncode = _WEXITSTATUS(sts)
-            elif _WIFSTOPPED(sts):
+            if _WIFSTOPPED(sts):
                 self.returncode = -_WSTOPSIG(sts)
             else:
-                # Should never happen
-                raise SubprocessError("Unknown child exit status!")
-
+                self.returncode = waitstatus_to_exitcode(sts)
 
         def _internal_poll(self, _deadstate=None, _waitpid=os.waitpid,
                 _WNOHANG=os.WNOHANG, _ECHILD=errno.ECHILD):
@@ -2067,7 +2063,11 @@ class Popen(object):
             # The race condition can still happen if the race condition
             # described above happens between the returncode test
             # and the kill() call.
-            os.kill(self.pid, sig)
+            try:
+                os.kill(self.pid, sig)
+            except ProcessLookupError:
+                # Supress the race condition error; bpo-40550.
+                pass
 
         def terminate(self):
             """Terminate the process with SIGTERM

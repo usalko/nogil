@@ -23,9 +23,16 @@ typedef struct {
     uintptr_t v;
 } _PyMutex;
 
+// A one-time event notification
 typedef struct {
     uintptr_t v;
 } _PyEvent;
+
+// A one-time event notification with reference counting
+typedef struct _PyEventRc {
+    _PyEvent event;
+    Py_ssize_t refcount;
+} _PyEventRc;
 
 typedef struct {
     uintptr_t v;
@@ -37,10 +44,13 @@ typedef enum {
     LOCKED = 1,
     HAS_PARKED = 2,
     ONCE_INITIALIZED = 4,
+    THREAD_ID_MASK = ~(LOCKED | HAS_PARKED)
 } _PyMutex_State;
 
 PyAPI_FUNC(void) _PyMutex_lock_slow(_PyMutex *m);
 PyAPI_FUNC(void) _PyMutex_unlock_slow(_PyMutex *m);
+PyAPI_FUNC(int) _PyMutex_TryLockSlow(_PyMutex *m);
+
 
 void _PyRawMutex_lock_slow(_PyRawMutex *m);
 void _PyRawMutex_unlock_slow(_PyRawMutex *m);
@@ -57,9 +67,9 @@ void _PyEvent_Notify(_PyEvent *o);
 void _PyEvent_Wait(_PyEvent *o);
 int _PyEvent_TimedWait(_PyEvent *o, int64_t ns);
 
-int _PyBeginOnce_slow(_PyOnceFlag *o);
-void _PyEndOnce(_PyOnceFlag *o);
-void _PyEndOnceFailed(_PyOnceFlag *o);
+PyAPI_FUNC(int) _PyBeginOnce_slow(_PyOnceFlag *o);
+PyAPI_FUNC(void) _PyEndOnce(_PyOnceFlag *o);
+PyAPI_FUNC(void) _PyEndOnceFailed(_PyOnceFlag *o);
 
 static inline int
 _PyMutex_is_locked(_PyMutex *m)
@@ -100,20 +110,40 @@ _PyRawMutex_unlock(_PyRawMutex *m)
     _PyRawMutex_unlock_slow(m);
 }
 
+static inline int
+_PyMutex_lock_fast(_PyMutex *m)
+{
+    return _Py_atomic_compare_exchange_uintptr(&m->v, UNLOCKED, LOCKED);
+}
+
 static inline void
 _PyMutex_lock(_PyMutex *m)
 {
-    // lock_count++;
-    if (_Py_atomic_compare_exchange_uintptr(&m->v, UNLOCKED, LOCKED)) {
+    if (_PyMutex_lock_fast(m)) {
         return;
     }
     _PyMutex_lock_slow(m);
 }
 
+static inline int
+_PyMutex_TryLock(_PyMutex *m)
+{
+    if (_PyMutex_lock_fast(m)) {
+        return 1;
+    }
+    return _PyMutex_TryLockSlow(m);
+}
+
+static inline int
+_PyMutex_unlock_fast(_PyMutex *m)
+{
+    return _Py_atomic_compare_exchange_uintptr(&m->v, LOCKED, UNLOCKED);
+}
+
 static inline void
 _PyMutex_unlock(_PyMutex *m)
 {
-    if (_Py_atomic_compare_exchange_uintptr(&m->v, LOCKED, UNLOCKED)) {
+    if (_PyMutex_unlock_fast(m)) {
         return;
     }
     _PyMutex_unlock_slow(m);
@@ -126,6 +156,13 @@ _PyRecursiveMutex_lock(_PyRecursiveMutex *m)
         return;
     }
     _PyRecursiveMutex_lock_slow(m);
+}
+
+static inline int
+_PyRecursiveMutex_owns_lock(_PyRecursiveMutex *m)
+{
+    uintptr_t v = _Py_atomic_load_uintptr(&m->v);
+    return (v & THREAD_ID_MASK) == _Py_ThreadId();
 }
 
 static inline void
@@ -144,6 +181,30 @@ static inline int
 _PyEvent_IsSet(_PyEvent *e)
 {
     return _Py_atomic_load_uintptr(&e->v) == LOCKED;
+}
+
+static inline _PyEventRc *
+_PyEventRc_New(void)
+{
+    _PyEventRc *erc = (_PyEventRc *)PyMem_RawCalloc(1, sizeof(_PyEventRc));
+    if (erc != NULL) {
+        erc->refcount = 1;
+    }
+    return erc;
+}
+
+static inline void
+_PyEventRc_Incref(_PyEventRc *erc)
+{
+    _Py_atomic_add_ssize(&erc->refcount, 1);
+}
+
+static inline void
+_PyEventRc_Decref(_PyEventRc *erc)
+{
+    if (_Py_atomic_add_ssize(&erc->refcount, -1) == 1) {
+        PyMem_RawFree(erc);
+    }
 }
 
 static inline int

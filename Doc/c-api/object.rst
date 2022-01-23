@@ -128,7 +128,7 @@ Object Protocol
    .. versionadded:: 3.3
 
 
-.. c:function:: int PyObject_GenericSetDict(PyObject *o, void *context)
+.. c:function:: int PyObject_GenericSetDict(PyObject *o, PyObject *value, void *context)
 
    A generic implementation for the setter of a ``__dict__`` descriptor. This
    implementation does not allow the dictionary to be deleted.
@@ -291,7 +291,7 @@ Object Protocol
    is equivalent to the Python expression ``type(o)``. This function increments the
    reference count of the return value. There's really no reason to use this
    function instead of the common expression ``o->ob_type``, which returns a
-   pointer of type :c:type:`PyTypeObject\*`, except when the incremented reference
+   pointer of type :c:type:`PyTypeObject*`, except when the incremented reference
    count is needed.
 
 
@@ -311,12 +311,12 @@ Object Protocol
    returned.  This is the equivalent to the Python expression ``len(o)``.
 
 
-.. c:function:: Py_ssize_t PyObject_LengthHint(PyObject *o, Py_ssize_t default)
+.. c:function:: Py_ssize_t PyObject_LengthHint(PyObject *o, Py_ssize_t defaultvalue)
 
    Return an estimated length for the object *o*. First try to return its
    actual length, then an estimate using :meth:`~object.__length_hint__`, and
    finally return the default value. On error return ``-1``. This is the
-   equivalent to the Python expression ``operator.length_hint(o, default)``.
+   equivalent to the Python expression ``operator.length_hint(o, defaultvalue)``.
 
    .. versionadded:: 3.4
 

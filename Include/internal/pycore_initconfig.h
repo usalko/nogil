@@ -108,7 +108,7 @@ typedef struct {
         .use_environment = -1, \
         .isolated = -1, \
         .dev_mode = -1, \
-        .disable_gil = -1 }
+        .disable_gil = -1}
 /* Note: _PyPreCmdline_INIT sets other fields to 0/NULL */
 
 extern void _PyPreCmdline_Clear(_PyPreCmdline *cmdline);
@@ -152,7 +152,7 @@ extern PyStatus _PyConfig_Copy(
     PyConfig *config,
     const PyConfig *config2);
 extern PyStatus _PyConfig_InitPathConfig(PyConfig *config);
-extern void _PyConfig_Write(const PyConfig *config,
+extern PyStatus _PyConfig_Write(const PyConfig *config,
     struct pyruntimestate *runtime);
 extern PyStatus _PyConfig_SetPyArgv(
     PyConfig *config,

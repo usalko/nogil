@@ -31,7 +31,7 @@ extern inline void* _mi_page_malloc(mi_heap_t* heap, mi_page_t* page, size_t siz
   mi_assert_internal(page->xblock_size==0||mi_page_block_size(page) >= size);
   mi_block_t* block = page->free;
   if (mi_unlikely(block == NULL)) {
-    return _mi_malloc_generic(heap, size);
+    return _mi_malloc_generic(heap, size); 
   }
   mi_assert_internal(block != NULL && _mi_ptr_page(block) == page);
   // pop from the free list
@@ -61,36 +61,6 @@ extern inline void* _mi_page_malloc(mi_heap_t* heap, mi_page_t* page, size_t siz
   for (size_t i = 0; i < maxpad; i++) { fill[i] = MI_DEBUG_PADDING; }
 #endif
   return block;
-}
-
-void* mi_heap_malloc_array(mi_heap_t* heap, size_t wsize, size_t *usable)
-{
-#if !defined(MI_PADDING) && 0
-  // FIXME: this is broken when pages_free_direct points to an empty page.
-  if (mi_likely(wsize <= MI_SMALL_WSIZE_MAX)) {
-    mi_assert(heap!=NULL);
-    mi_assert(heap->thread_id == 0 || heap->thread_id == _mi_thread_id()); // heaps are thread local
-    mi_page_t* page = heap->pages_free_direct[wsize];
-    size_t size = page->xblock_size;
-    *usable = size / sizeof(void*);
-    void* p = _mi_page_malloc(heap, page, size);
-    #if MI_STAT>1
-    if (p != NULL) {
-      if (!mi_heap_is_initialized(heap)) { heap = mi_get_default_heap(); }
-      mi_heap_stat_increase(heap, malloc, mi_usable_size(p));
-    }
-    #endif
-    return p;
-  }
-#endif
-
-  if (wsize > PTRDIFF_MAX/sizeof(void*)) {
-    return NULL;
-  }
-
-  size_t size = mi_good_size(wsize * sizeof(void*));
-  *usable = size / sizeof(void*);
-  return mi_heap_malloc(heap, size);
 }
 
 // allocate a small block
@@ -476,7 +446,7 @@ bool _mi_free_delayed_block(mi_block_t* block) {
   // get segment and page
   const mi_segment_t* const segment = _mi_ptr_segment(block);
   mi_assert_internal(_mi_ptr_cookie(segment) == segment->cookie);
-  mi_assert_internal(_mi_thread_id() == segment->thread_id);
+  // mi_assert_internal(_mi_thread_id() == segment->thread_id);
   mi_page_t* const page = _mi_segment_page_of(segment, block);
 
   // Clear the no-delayed flag so delayed freeing is used again for this page.

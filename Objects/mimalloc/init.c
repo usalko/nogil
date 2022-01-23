@@ -7,6 +7,9 @@ terms of the MIT license. A copy of the license can be found in the file
 #include "mimalloc.h"
 #include "mimalloc-internal.h"
 
+#include "Python.h"
+#include "pycore_gc.h"
+
 #include <string.h>  // memcpy, memset
 #include <stdlib.h>  // atexit
 
@@ -104,8 +107,7 @@ const mi_heap_t _mi_heap_empty = {
   false,
   0,
   false,
-  0,
-  NULL
+  0
 };
 
 // the thread-local default heap for allocation
@@ -126,6 +128,14 @@ mi_stats_t _mi_stats_main = { MI_STATS_NULL };
 
 
 
+static int debug_offsets[MI_NUM_HEAPS] = {
+  [mi_heap_tag_default] = 0,
+  [mi_heap_tag_obj] = offsetof(PyObject, ob_type),
+  [mi_heap_tag_gc] = sizeof(PyGC_Head) + offsetof(PyObject, ob_type),
+  [mi_heap_tag_list_array] = -1,
+  [mi_heap_tag_dict_keys] = -1
+};
+
 static void _mi_heap_init_ex(mi_heap_t* heap, mi_tld_t* tld, int tag) {
   if (heap->cookie != 0) return;
   memcpy(heap, &_mi_heap_empty, sizeof(*heap));
@@ -141,6 +151,7 @@ static void _mi_heap_init_ex(mi_heap_t* heap, mi_tld_t* tld, int tag) {
   heap->keys[1] = _mi_heap_random_next(heap);
   heap->tld = tld;
   heap->tag = tag;
+  heap->debug_offset = debug_offsets[tag];
 }
 
 static void _mi_thread_init_ex(mi_tld_t* tld, mi_heap_t heaps[])
@@ -203,19 +214,24 @@ static bool _mi_heap_init(void) {
   return false;
 }
 
-void mi_heap_absorb(mi_heap_t* heap, mi_heap_t* from);
+static void _mi_tld_destroy(mi_tld_t *tld);
 
-// Free the thread local default heap (called from `mi_thread_done`)
-bool _mi_heap_done(mi_heap_t* heap) {
-  if (!mi_heap_is_initialized(heap)) return true;
+void _mi_thread_abandon(mi_tld_t *tld) {
+  uintptr_t refcount = mi_atomic_decrement(&tld->refcount) - 1;
+  if (refcount != 0) {
+    return;
+  }
 
-  // switch to backing heap and free it
-  heap = heap->tld->heap_backing;
-  if (!mi_heap_is_initialized(heap)) return false;
+  mi_heap_t *heap = tld->heap_backing;
+  mi_assert_internal(mi_heap_is_initialized(heap));
 
+  if (heap == &_mi_heap_main && heap->thread_id == _mi_thread_id()) {
+    mi_assert_internal(tld->status == 0);
+    return;
+  }
 
   // delete all non-backing heaps in this thread
-  mi_heap_t* curr = heap->tld->heaps;
+  mi_heap_t* curr = tld->heaps;
   while (curr != NULL) {
     mi_heap_t* next = curr->next; // save `next` as `curr` will be freed
     if (curr != heap) {
@@ -227,22 +243,29 @@ bool _mi_heap_done(mi_heap_t* heap) {
   mi_assert_internal(heap->tld->heaps == heap && heap->next == NULL);
   mi_assert_internal(mi_heap_is_backing(heap));
 
-  // collect if not the main thread
-  if (heap != &_mi_heap_main) {
-    for (int tag = 0; tag < MI_NUM_HEAPS; tag++) {
-      if (tag != mi_heap_tag_default) {
-        mi_heap_absorb(heap, heap->tld->default_heaps[tag]);
-      }
+  for (int tag = 0; tag < MI_NUM_HEAPS; tag++) {
+    if (tag != mi_heap_tag_default) {
+      _mi_heap_absorb(heap, heap->tld->default_heaps[tag]);
     }
-    _mi_heap_collect_abandon(heap);
   }
+  _mi_heap_collect_abandon(heap);
 
   // merge stats
   _mi_stats_done(&heap->tld->stats);
 
-  // free if not the main thread
+  do {
+    uintptr_t status = mi_atomic_read(&tld->status);
+    if (status != MI_THREAD_ALIVE) {
+      _mi_tld_destroy(tld);
+      break;
+    }
+  } while (!mi_atomic_cas_strong(&tld->status, MI_THREAD_ABANDONED, MI_THREAD_ALIVE));
+}
+
+static void _mi_tld_destroy(mi_tld_t *tld) {
+  mi_heap_t *heap = tld->heap_backing;
   if (heap != &_mi_heap_main) {
-    mi_assert_internal(heap->tld->segments.count == 0);
+    mi_assert_internal(tld->segments.count == 0);
     _mi_os_free(heap, sizeof(mi_thread_data_t), &_mi_stats_main);
   }
 #if (MI_DEBUG > 0)
@@ -251,7 +274,6 @@ bool _mi_heap_done(mi_heap_t* heap) {
     mi_assert_internal(heap->tld->heap_backing == &_mi_heap_main);
   }
 #endif
-  return false;
 }
 
 
@@ -358,6 +380,15 @@ static void _mi_thread_done(mi_heap_t* heap) {
 
   // reset default heap
   _mi_heap_set_default_direct(_mi_is_main_thread() ? &_mi_heap_main : (mi_heap_t*)&_mi_heap_empty);
+
+  mi_tld_t *tld = heap->tld;
+  do {
+    uintptr_t status = mi_atomic_read(&tld->status);
+    if (status != MI_THREAD_ALIVE) {
+      _mi_tld_destroy(tld);
+      break;
+    }
+  } while (!mi_atomic_cas_strong(&tld->status, MI_THREAD_DEAD, MI_THREAD_ALIVE));
 }
 
 void _mi_heap_set_default_direct(mi_heap_t* heap)  {

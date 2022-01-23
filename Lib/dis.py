@@ -156,7 +156,7 @@ def _format_code_info(co):
     lines.append("Positional-only arguments: %s" % co.co_posonlyargcount)
     lines.append("Kw-only arguments: %s" % co.co_kwonlyargcount)
     lines.append("Number of locals:  %s" % co.co_nlocals)
-    lines.append("Stack size:        %s" % (co.co_stacksize + co.co_callablesize))
+    lines.append("Stack size:        %s" % (co.co_stacksize))
     lines.append("Flags:             %s" % pretty_flags(co.co_flags))
     if co.co_consts:
         lines.append("Constants:")
@@ -266,7 +266,7 @@ def get_instructions(x, *, first_line=None):
     the disassembled code object.
     """
     co = _get_code_object(x)
-    cell_names = [] # FIXME # co.co_cellvars + co.co_freevars
+    cell_names = [] # FIXME(sgross): # co.co_cellvars + co.co_freevars
     linestarts = dict(findlinestarts(co))
     if first_line is not None:
         line_offset = first_line - co.co_firstlineno
@@ -388,36 +388,6 @@ def _get_instructions_bytes(code, varnames=None, constants=None,
         is_jump_target = offset in labels
         bytecode = opcodes[op]
         argval, argrepr = get_repr(bytecode, *imm)
-        # if arg is not None:
-        #     #  Set argval to the dereferenced value of the argument when
-        #     #  available, and argrepr to the string representation of argval.
-        #     #    _disassemble_bytes needs the string repr of the
-        #     #    raw name index for LOAD_GLOBAL, LOAD_CONST, etc.
-        #     argval = arg
-        #     if op in hasconst:
-        #         argval, argrepr = _get_const_info(arg, constants)
-        #     elif op in hasname:
-        #         argval, argrepr = _get_name_info(arg, names)
-        #     elif op in hasjrel:
-        #         argval = offset + 2 + arg
-        #         argrepr = "to " + repr(argval)
-        #     elif op in haslocal:
-        #         argval, argrepr = _get_name_info(arg, varnames)
-        #     elif op in hascompare:
-        #         argval = cmp_op[arg]
-        #         argrepr = argval
-        #     elif op in hasfree:
-        #         argval, argrepr = _get_name_info(arg, cells)
-        #     elif op == FORMAT_VALUE:
-        #         argval, argrepr = FORMAT_VALUE_CONVERTERS[arg & 0x3]
-        #         argval = (argval, bool(arg & 0x4))
-        #         if argval[1]:
-        #             if argrepr:
-        #                 argrepr += ', '
-        #             argrepr += 'with format'
-        #     elif op == MAKE_FUNCTION:
-        #         argrepr = ', '.join(s for i, s in enumerate(MAKE_FUNCTION_FLAGS)
-        #                             if arg & (1<<i))
         yield Instruction(opname[op], op,
                           imm, argval, argrepr,
                           offset, starts_line, is_jump_target)
@@ -427,17 +397,8 @@ def disassemble(co, lasti=-1, *, file=None):
     cell_names = co.co_cellvars + co.co_freevars
     linestarts = dict(findlinestarts(co))
     _disassemble_bytes(co.co_code, lasti, co.co_varnames,
-                       co.co_consts, cell_names, linestarts, file=file)
-    if len(co.co_cell2reg) > 0:
-        print(' ' * 2 + f'Cell variables: {list(co.co_cell2reg)}', file=file)
-    if len(co.co_free2reg) > 0:
-        print(' ' * 2 + f'Free variables: {list(co.co_free2reg)}', file=file)
-    exc_handlers = co.co_exc_handlers
-    if len(exc_handlers) > 0:
-        print(' ' * 2 + f'Exception handlers ({len(exc_handlers)}):', file=file)
-        print(f'    start  ->  (handler,  end)', file=file)
-        for start, handler, end, reg in exc_handlers:
-            print(f'     {start:4d}  ->      {handler:4d}, {end:4d}  [reg={reg}]', file=file)
+                       co.co_consts, cell_names, linestarts, co.co_cell2reg,
+                       co.co_free2reg, co.co_exc_handlers, file=file)
 
 def _disassemble_recursive(co, *, file=None, depth=None):
     disassemble(co, file=file)
@@ -451,7 +412,8 @@ def _disassemble_recursive(co, *, file=None, depth=None):
                 _disassemble_recursive(x, file=file, depth=depth)
 
 def _disassemble_bytes(code, lasti=-1, varnames=None, constants=None,
-                       cells=None, linestarts=None,
+                       cells=None, linestarts=None, cell2reg=None,
+                       free2reg=None, exc_handlers=None,
                        *, file=None, line_offset=0):
     # Omit the line number column entirely if we have no line number info
     show_lineno = linestarts is not None
@@ -479,6 +441,15 @@ def _disassemble_bytes(code, lasti=-1, varnames=None, constants=None,
         is_current_instr = instr.offset == lasti
         print(instr._disassemble(lineno_width, is_current_instr, offset_width),
               file=file)
+    if cell2reg:
+        print(' ' * 2 + f'Cell variables: {list(cell2reg)}', file=file)
+    if free2reg:
+        print(' ' * 2 + f'Free variables: {list(free2reg)}', file=file)
+    if exc_handlers:
+        print(' ' * 2 + f'Exception handlers ({len(exc_handlers)}):', file=file)
+        print(f'    start  ->  (handler,  end)', file=file)
+        for start, handler, end, reg in exc_handlers:
+            print(f'     {start:4d}  ->      {handler:4d}, {end:4d}  [reg={reg}]', file=file)
 
 def _disassemble_str(source, **kwargs):
     """Compile the source string, then disassemble the code object."""
@@ -623,10 +594,13 @@ class Bytecode:
             offset = -1
         with io.StringIO() as output:
             _disassemble_bytes(co.co_code, varnames=co.co_varnames,
-                               names=co.co_names, constants=co.co_consts,
+                               constants=co.co_consts,
                                cells=self._cell_names,
                                linestarts=self._linestarts,
                                line_offset=self._line_offset,
+                               cell2reg=co.co_cell2reg,
+                               free2reg=co.co_free2reg,
+                               exc_handlers=co.co_exc_handlers,
                                file=output,
                                lasti=offset)
             return output.getvalue()
@@ -637,7 +611,7 @@ def _test():
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('infile', type=argparse.FileType(), nargs='?', default='-')
+    parser.add_argument('infile', type=argparse.FileType('rb'), nargs='?', default='-')
     args = parser.parse_args()
     with args.infile as infile:
         source = infile.read()

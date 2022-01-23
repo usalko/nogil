@@ -92,16 +92,19 @@ ctrl_match_empty(dict_ctrl ctrl)
 #endif
 }
 
-static inline bool
+static inline int
 ctrl_has_empty(dict_ctrl ctrl)
 {
     return ctrl_match_empty(ctrl) != 0;
 }
 
-#ifdef _Py_MEMORY_SANITIZER
-__attribute__((no_sanitize("thread")))
-#endif
-static inline dict_ctrl
+static inline int
+ctrl_is_full(uint8_t ctrl)
+{
+    return (ctrl & CTRL_FULL) != 0;
+}
+
+static inline dict_ctrl _Py_NO_SANITIZE_THREAD
 load_ctrl(PyDictKeysObject *keys, Py_ssize_t ix)
 {
 #ifdef HAVE_SSE2
@@ -163,6 +166,7 @@ _PyDict_VersionTag(PyObject *mp)
 static inline PyDictKeyEntry *
 find_unicode(PyDictKeysObject *keys, PyObject *key)
 {
+    assert(PyUnicode_CheckExact(key) && keys->dk_type == DK_UNICODE);
     PyDictKeyEntry *entries = keys->dk_entries;
     size_t mask = keys->dk_size & DICT_SIZE_MASK;
     Py_hash_t hash = ((PyASCIIObject *)key)->hash;

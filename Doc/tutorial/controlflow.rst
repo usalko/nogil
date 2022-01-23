@@ -104,14 +104,14 @@ The given end point is never part of the generated sequence; ``range(10)`` gener
 is possible to let the range start at another number, or to specify a different
 increment (even negative; sometimes this is called the 'step')::
 
-    range(5, 10)
-       5, 6, 7, 8, 9
+    >>> list(range(5, 10))
+    [5, 6, 7, 8, 9]
 
-    range(0, 10, 3)
-       0, 3, 6, 9
+    >>> list(range(0, 10, 3))
+    [0, 3, 6, 9]
 
-    range(-10, -100, -30)
-      -10, -40, -70
+    >>> list(range(-10, -100, -30))
+    [-10, -40, -70]
 
 To iterate over the indices of a sequence, you can combine :func:`range` and
 :func:`len` as follows::
@@ -131,7 +131,7 @@ function, see :ref:`tut-loopidioms`.
 
 A strange thing happens if you just print a range::
 
-   >>> print(range(10))
+   >>> range(10)
    range(0, 10)
 
 In many ways the object returned by :func:`range` behaves as if it is a list,
@@ -149,13 +149,7 @@ that takes an iterable is :func:`sum`::
     6
 
 Later we will see more functions that return iterables and take iterables as
-arguments.  Lastly, maybe you are curious about how to get a list from a range.
-Here is the solution::
-
-   >>> list(range(4))
-   [0, 1, 2, 3]
-
-In chapter :ref:`tut-structures`, we will discuss in more detail about
+arguments.  In chapter :ref:`tut-structures`, we will discuss in more detail about
 :func:`list`.
 
 .. _tut-break:
@@ -207,15 +201,16 @@ iteration of the loop::
     ...     if num % 2 == 0:
     ...         print("Found an even number", num)
     ...         continue
-    ...     print("Found a number", num)
+    ...     print("Found an odd number", num)
+    ...
     Found an even number 2
-    Found a number 3
+    Found an odd number 3
     Found an even number 4
-    Found a number 5
+    Found an odd number 5
     Found an even number 6
-    Found a number 7
+    Found an odd number 7
     Found an even number 8
-    Found a number 9
+    Found an odd number 9
 
 .. _tut-pass:
 
@@ -294,14 +289,14 @@ referenced.
 The actual parameters (arguments) to a function call are introduced in the local
 symbol table of the called function when it is called; thus, arguments are
 passed using *call by value* (where the *value* is always an object *reference*,
-not the value of the object). [#]_ When a function calls another function, a new
+not the value of the object). [#]_ When a function calls another function,
+or calls itself recursively, a new
 local symbol table is created for that call.
 
-A function definition introduces the function name in the current symbol table.
-The value of the function name has a type that is recognized by the interpreter
-as a user-defined function.  This value can be assigned to another name which
-can then also be used as a function.  This serves as a general renaming
-mechanism::
+A function definition associates the function name with the function object in
+the current symbol table.  The interpreter recognizes the object pointed to by
+that name as a user-defined function.  Other names can also point to that same
+function object and can also be used to access the function::
 
    >>> fib
    <function fib at 10042ed0>
@@ -484,7 +479,7 @@ Here's an example that fails due to this restriction::
    >>> function(0, a=0)
    Traceback (most recent call last):
      File "<stdin>", line 1, in <module>
-   TypeError: function() got multiple values for keyword argument 'a'
+   TypeError: function() got multiple values for argument 'a'
 
 When a final formal parameter of the form ``**name`` is present, it receives a
 dictionary (see :ref:`typesmapping`) containing all keyword arguments except for
@@ -620,7 +615,7 @@ parameters as there is a ``/`` in the function definition::
    >>> pos_only_arg(arg=1)
    Traceback (most recent call last):
      File "<stdin>", line 1, in <module>
-   TypeError: pos_only_arg() got an unexpected keyword argument 'arg'
+   TypeError: pos_only_arg() got some positional-only arguments passed as keyword arguments: 'arg'
 
 The third function ``kwd_only_args`` only allows keyword arguments as indicated
 by a ``*`` in the function definition::
@@ -650,7 +645,7 @@ definition::
    >>> combined_example(pos_only=1, standard=2, kwd_only=3)
    Traceback (most recent call last):
      File "<stdin>", line 1, in <module>
-   TypeError: combined_example() got an unexpected keyword argument 'pos_only'
+   TypeError: combined_example() got some positional-only arguments passed as keyword arguments: 'pos_only'
 
 
 Finally, consider this function definition which has a potential collision between the positional argument ``name``  and ``**kwds`` which has ``name`` as a key::
@@ -659,7 +654,7 @@ Finally, consider this function definition which has a potential collision betwe
         return 'name' in kwds
 
 There is no possible call that will make it return ``True`` as the keyword ``'name'``
-will always to bind to the first parameter. For example::
+will always bind to the first parameter. For example::
 
     >>> foo(1, **{'name': 2})
     Traceback (most recent call last):
@@ -866,7 +861,7 @@ function.  Parameter annotations are defined by a colon after the parameter name
 by an expression evaluating to the value of the annotation.  Return annotations are
 defined by a literal ``->``, followed by an expression, between the parameter
 list and the colon denoting the end of the :keyword:`def` statement.  The
-following example has a positional argument, a keyword argument, and the return
+following example has a required argument, an optional argument, and the return
 value annotated::
 
    >>> def f(ham: str, eggs: str = 'eggs') -> str:

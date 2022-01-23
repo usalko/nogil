@@ -3,6 +3,7 @@
 import os as _os
 import sys as _sys
 import _thread
+import functools
 
 from time import monotonic as _time
 from _weakrefset import WeakSet
@@ -36,7 +37,6 @@ _get_join_event = _thread._get_join_event
 _thread_shutdown = _thread._shutdown
 _Event = _thread.Event
 get_ident = _thread.get_ident
-_is_main_interpreter = _thread._is_main_interpreter
 try:
     get_native_id = _thread.get_native_id
     _HAVE_THREAD_NATIVE_ID = True
@@ -123,6 +123,11 @@ class _RLock:
             self._count,
             hex(id(self))
         )
+
+    def _at_fork_reinit(self):
+        self._block._at_fork_reinit()
+        self._owner = None
+        self._count = 0
 
     def acquire(self, blocking=True, timeout=-1):
         """Acquire a lock, blocking or non-blocking.
@@ -245,6 +250,10 @@ class Condition:
         except AttributeError:
             pass
         self._waiters = _deque()
+
+    def _at_fork_reinit(self):
+        self._lock._at_fork_reinit()
+        self._waiters.clear()
 
     def __enter__(self):
         return self._lock.__enter__()
@@ -515,9 +524,9 @@ class Event:
         self._cond = Condition(Lock())
         self._flag = False
 
-    def _reset_internal_locks(self):
-        # private!  called by Thread._reset_internal_locks by _after_fork()
-        self._cond.__init__(Lock())
+    def _at_fork_reinit(self):
+        # Private method called by Thread._reset_internal_locks()
+        self._cond._at_fork_reinit()
 
     def is_set(self):
         """Return true if and only if the internal flag is true."""
@@ -601,7 +610,7 @@ class Barrier:
         self._action = action
         self._timeout = timeout
         self._parties = parties
-        self._state = 0 #0 filling, 1, draining, -1 resetting, -2 broken
+        self._state = 0  # 0 filling, 1 draining, -1 resetting, -2 broken
         self._count = 0
 
     def wait(self, timeout=None):
@@ -745,11 +754,15 @@ _counter() # Consume 0 so first non-main thread has id 1.
 def _newname(template="Thread-%d"):
     return template % _counter()
 
-# Active thread administration
-_active_limbo_lock = _allocate_lock()
+# Active thread administration.
+#
+# bpo-44422: Use a reentrant lock to allow reentrant calls to functions like
+# threading.enumerate().
+_active_limbo_lock = RLock()
 _active = {}    # maps thread id to Thread object
 _limbo = {}
 _dangling = WeakSet()
+
 
 # Main class for threads
 
@@ -815,7 +828,7 @@ class Thread:
     def _reset_internal_locks(self, is_alive):
         # private!  Called by _after_fork() to reset our internal locks as
         # they may be in an invalid state leading to a deadlock or crash.
-        self._started._reset_internal_locks()
+        self._started._at_fork_reinit()
         if not is_alive and not self._done_event.is_set():
             self._done_event.set()
 
@@ -824,7 +837,6 @@ class Thread:
         status = "initial"
         if self._started.is_set():
             status = "started"
-        # self.is_alive() # easy way to get ._is_stopped set when appropriate
         if self._done_event.is_set():
             status = "stopped"
         if self._daemonic:
@@ -848,10 +860,6 @@ class Thread:
 
         if self._started.is_set():
             raise RuntimeError("threads can only be started once")
-
-        if self.daemon and not _is_main_interpreter():
-            raise RuntimeError("daemon thread are not supported "
-                               "in subinterpreters")
 
         with _active_limbo_lock:
             _limbo[self] = self
@@ -920,7 +928,6 @@ class Thread:
     def _bootstrap_inner(self):
         try:
             self._set_ident()
-            # self._set_tstate_lock()
             if _HAVE_THREAD_NATIVE_ID:
                 self._set_native_id()
             self._started.set()
@@ -1034,16 +1041,13 @@ class Thread:
         """Return whether the thread is alive.
 
         This method returns True just before the run() method starts until just
-        after the run() method terminates. The module function enumerate()
-        returns a list of all alive threads.
+        after the run() method terminates. See also the module function
+        enumerate().
 
         """
         # FIXME: sgross _is_stopped vs _done_event
         assert self._initialized, "Thread.__init__() not called"
         return self._started.is_set() and not self._done_event.is_set()
-        # if self._is_stopped or not self._started.is_set():
-        #     return False
-        # return self._done_event.is_set()
 
     @property
     def daemon(self):
@@ -1214,7 +1218,6 @@ class _MainThread(Thread):
 
     def __init__(self):
         Thread.__init__(self, name="MainThread", daemon=False)
-        # self._set_tstate_lock()
         self._done_event = _get_join_event()
         self._started.set()
         self._set_ident()
@@ -1299,6 +1302,27 @@ def enumerate():
     with _active_limbo_lock:
         return list(_active.values()) + list(_limbo.values())
 
+
+_threading_atexits = []
+_SHUTTING_DOWN = False
+
+def _register_atexit(func, *arg, **kwargs):
+    """CPython internal: register *func* to be called before joining threads.
+
+    The registered *func* is called with its arguments just before all
+    non-daemon threads are joined in `_shutdown()`. It provides a similar
+    purpose to `atexit.register()`, but its functions are called prior to
+    threading shutdown instead of interpreter shutdown.
+
+    For similarity to atexit, the registered functions are called in reverse.
+    """
+    if _SHUTTING_DOWN:
+        raise RuntimeError("can't register atexit after shutdown")
+
+    call = functools.partial(func, *arg, **kwargs)
+    _threading_atexits.append(call)
+
+
 from _thread import stack_size
 
 # Create the main thread object,
@@ -1320,7 +1344,14 @@ def _shutdown():
         # _shutdown() was already called
         return
 
+    global _SHUTTING_DOWN
+    _SHUTTING_DOWN = True
     _main_thread._done_event.set()
+
+    # Call registered threading atexit functions before threads are joined.
+    # Order is reversed, similar to atexit.
+    for atexit_call in reversed(_threading_atexits):
+        atexit_call()
 
     # Wait for non-daemon threads to stop
     _thread_shutdown()
@@ -1350,11 +1381,19 @@ def _after_fork():
     # Reset _active_limbo_lock, in case we forked while the lock was held
     # by another (non-forked) thread.  http://bugs.python.org/issue874900
     global _active_limbo_lock, _main_thread
-    _active_limbo_lock = _allocate_lock()
+    _active_limbo_lock = RLock()
 
     # fork() only copied the current thread; clear references to others.
     new_active = {}
-    current = current_thread()
+
+    try:
+        current = _active[get_ident()]
+    except KeyError:
+        # fork() was called in a thread which was not spawned
+        # by threading.Thread. For example, a thread spawned
+        # by thread.start_new_thread().
+        current = _MainThread()
+
     _main_thread = current
 
     with _active_limbo_lock:

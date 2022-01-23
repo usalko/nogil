@@ -123,14 +123,12 @@ import sys
 import threading
 import unittest
 import weakref
-import opcode
-import gc
 try:
     import ctypes
 except ImportError:
     ctypes = None
 from test.support import (run_doctest, run_unittest, cpython_only,
-                          check_impl_detail)
+                          check_impl_detail, gc_collect)
 
 
 def consts(t):
@@ -209,7 +207,7 @@ class CodeTest(unittest.TestCase):
         CodeType = type(co)
 
         # test code constructor
-        return CodeType(co.co_argcount,
+        CodeType(co.co_argcount,
                         co.co_posonlyargcount,
                         co.co_kwonlyargcount,
                         co.co_nlocals,
@@ -328,7 +326,7 @@ class CodeWeakRefTest(unittest.TestCase):
         coderef = weakref.ref(f.__code__, callback)
         self.assertTrue(bool(coderef()))
         del f
-        gc.collect()
+        gc_collect()  # For PyPy or other GCs.
         self.assertFalse(bool(coderef()))
         self.assertTrue(self.called)
 
@@ -387,7 +385,7 @@ if check_impl_detail(cpython=True) and ctypes is not None:
 
             SetExtra(f.__code__, FREE_INDEX, ctypes.c_voidp(100))
             del f
-            gc.collect()
+            gc_collect()
             self.assertEqual(LAST_FREED, 100)
 
         def test_get_set(self):
@@ -417,9 +415,8 @@ if check_impl_detail(cpython=True) and ctypes is not None:
                     self.f = f
                     self.test = test
                 def run(self):
-                    self.f = None
-                    gc.collect()
-                    self.test.assertEqual(LAST_FREED, 500)
+                    del self.f
+                    gc_collect()
 
             SetExtra(f.__code__, FREE_INDEX, ctypes.c_voidp(500))
             tt = ThreadTest(f, self)

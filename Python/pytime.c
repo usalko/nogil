@@ -1,12 +1,12 @@
 #include "Python.h"
 #ifdef MS_WINDOWS
-#include <windows.h>
+#include <winsock2.h>         /* struct timeval */
 #endif
 
 #if defined(__APPLE__)
 #include <mach/mach_time.h>   /* mach_absolute_time(), mach_timebase_info() */
 
-#if defined(__APPLE__) && defined(__has_builtin) 
+#if defined(__APPLE__) && defined(__has_builtin)
 #  if __has_builtin(__builtin_available)
 #    define HAVE_CLOCK_GETTIME_RUNTIME __builtin_available(macOS 10.12, iOS 10.0, tvOS 10.0, watchOS 3.0, *)
 #  endif
@@ -730,7 +730,7 @@ pygettimeofday(_PyTime_t *tp, _Py_clock_info_t *info, int raise)
     }
 
 #ifdef HAVE_CLOCK_GETTIME_RUNTIME
-    } else { 
+    } else {
 #endif
 
 #endif
@@ -771,7 +771,7 @@ _PyTime_GetSystemClock(void)
     _PyTime_t t;
     if (pygettimeofday(&t, NULL, 0) < 0) {
         /* should not happen, _PyTime_Init() checked the clock at startup */
-        Py_UNREACHABLE();
+        Py_FatalError("pygettimeofday() failed");
     }
     return t;
 }
@@ -801,7 +801,7 @@ pymonotonic(_PyTime_t *tp, _Py_clock_info_t *info, int raise)
             return -1;
         }
         /* Hello, time traveler! */
-        Py_UNREACHABLE();
+        Py_FatalError("pymonotonic: integer overflow");
     }
     *tp = t * MS_TO_NS;
 
@@ -943,7 +943,7 @@ _PyTime_GetMonotonicClock(void)
     if (pymonotonic(&t, NULL, 0) < 0) {
         /* should not happen, _PyTime_Init() checked that monotonic clock at
            startup */
-        Py_UNREACHABLE();
+        Py_FatalError("pymonotonic() failed");
     }
     return t;
 }
@@ -1044,7 +1044,7 @@ _PyTime_GetPerfCounter(void)
 {
     _PyTime_t t;
     if (_PyTime_GetPerfCounterWithInfo(&t, NULL)) {
-        Py_UNREACHABLE();
+        Py_FatalError("_PyTime_GetPerfCounterWithInfo() failed");
     }
     return t;
 }

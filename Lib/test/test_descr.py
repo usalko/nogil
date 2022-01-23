@@ -4,6 +4,8 @@ import gc
 import itertools
 import math
 import pickle
+import random
+import string
 import sys
 import types
 import unittest
@@ -844,6 +846,14 @@ class ClassPropertiesAndMethods(unittest.TestCase):
         else:
             self.fail("inheriting from ModuleType and str at the same time "
                       "should fail")
+
+        # Issue 34805: Verify that definition order is retained
+        def random_name():
+            return ''.join(random.choices(string.ascii_letters, k=10))
+        class A:
+            pass
+        subclasses = [type(random_name(), (A,), {}) for i in range(100)]
+        self.assertEqual(A.__subclasses__(), subclasses)
 
     def test_multiple_inheritance(self):
         # Testing multiple inheritance...
@@ -2526,9 +2536,9 @@ order (MRO) for bases """
         except TypeError:
             pass
 
-        # Two essentially featureless objects, just inheriting stuff from
-        # object.
-        self.assertEqual(dir(NotImplemented), dir(Ellipsis))
+        # Two essentially featureless objects, (Ellipsis just inherits stuff
+        # from object.
+        self.assertEqual(dir(object()), dir(Ellipsis))
 
         # Nasty test case for proxied objects
         class Wrapper(object):
@@ -4315,6 +4325,42 @@ order (MRO) for bases """
         else:
             self.fail("Carlo Verre __delattr__ succeeded!")
 
+    def test_carloverre_multi_inherit_valid(self):
+        class A(type):
+            def __setattr__(cls, key, value):
+                type.__setattr__(cls, key, value)
+
+        class B:
+            pass
+
+        class C(B, A):
+            pass
+
+        obj = C('D', (object,), {})
+        try:
+            obj.test = True
+        except TypeError:
+            self.fail("setattr through direct base types should be legal")
+
+    def test_carloverre_multi_inherit_invalid(self):
+        class A(type):
+            def __setattr__(cls, key, value):
+                object.__setattr__(cls, key, value)  # this should fail!
+
+        class B:
+            pass
+
+        class C(B, A):
+            pass
+
+        obj = C('D', (object,), {})
+        try:
+            obj.test = True
+        except TypeError:
+            pass
+        else:
+            self.fail("setattr through indirect base types should be rejected")
+
     def test_weakref_segfault(self):
         # Testing weakref segfault...
         # SF 742911
@@ -4902,8 +4948,11 @@ class DictProxyTests(unittest.TestCase):
             self.assertIn('{!r}: {!r}'.format(k, v), r)
 
 
-class PTypesLongInitTest(unittest.TestCase):
+class AAAPTypesLongInitTest(unittest.TestCase):
     # This is in its own TestCase so that it can be run before any other tests.
+    # (Hence the 'AAA' in the test class name: to make it the first
+    # item in a list sorted by name, like
+    # unittest.TestLoader.getTestCaseNames() does.)
     def test_pytype_long_ready(self):
         # Testing SF bug 551412 ...
 
@@ -5396,8 +5445,7 @@ class PicklingTests(unittest.TestCase):
 class SharedKeyTests(unittest.TestCase):
 
     @support.cpython_only
-    @unittest.skip("split tables temporarily broken")
-    @unittest.skipIf(_testcapi is None, 'need the _testcapi module')
+    @unittest.skip("sgross: split tables temporarily broken")
     def test_subclasses(self):
         # Verify that subclasses can share keys (per PEP 412)
         class A:
@@ -5634,7 +5682,7 @@ class MroTest(unittest.TestCase):
 
     def test_incomplete_super(self):
         """
-        Attrubute lookup on a super object must be aware that
+        Attribute lookup on a super object must be aware that
         its target type can be uninitialized (type->tp_mro == NULL).
         """
         class M(DebugHelperMeta):
@@ -5649,12 +5697,5 @@ class MroTest(unittest.TestCase):
             pass
 
 
-def test_main():
-    # Run all local test cases, with PTypesLongInitTest first.
-    support.run_unittest(PTypesLongInitTest, OperatorsTest,
-                         ClassPropertiesAndMethods, DictProxyTests,
-                         MiscTests, PicklingTests, SharedKeyTests,
-                         MroTest)
-
 if __name__ == "__main__":
-    test_main()
+    unittest.main()

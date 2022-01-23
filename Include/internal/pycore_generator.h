@@ -1,7 +1,8 @@
 #ifndef Py_INTERNAL_GENERATOR_H
 #define Py_INTERNAL_GENERATOR_H
 
-#include "ceval2_meta.h"
+#include "ceval_meta.h"
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,8 +19,13 @@ enum PyGeneratorStatus {
     GEN_CLOSED    = 3
 };
 
+struct PyVirtualThread {
+    PyObject_HEAD
+    struct ThreadState thread;
+};
+
 /* Generator object interface: move to genobject.h */
-typedef struct PyGenObject2 {
+typedef struct PyGenObject {
     struct PyVirtualThread base;
     PyObject *weakreflist;
     PyObject *name;
@@ -28,17 +34,18 @@ typedef struct PyGenObject2 {
     PyObject *yield_from;  /* object being iterated by yield from, or None */
     PyObject *code;
     char status;
-} PyGenObject2;
+    char retains_code;
+} PyGenObject;
 
 typedef struct {
-    PyGenObject2 base;
+    PyGenObject base;
     PyObject *origin;
-} PyCoroObject2;
+} PyCoroObject;
 
 /* Asynchronous Generators */
 
 typedef struct {
-    PyGenObject2 base;
+    PyGenObject base;
     PyObject *finalizer;
 
     /* Flag is set to 1 when hooks set up by sys.set_asyncgen_hooks
@@ -51,27 +58,22 @@ typedef struct {
     int closed;
 
     int running_async;
-} PyAsyncGenObject2;
+} PyAsyncGenObject;
 
-PyGenObject2 *
-PyGen2_NewWithSomething(struct ThreadState *ts, int typeidx);
+PyGenObject *
+PyGen_NewWithCode(PyThreadState *ts, PyCodeObject *co);
 
-PyAPI_FUNC(PyObject *) _PyGen2_FetchStopIterationValue(void);
-PyAPI_FUNC(PyObject *) _PyGen_YieldFrom(PyGenObject2 *gen, PyObject *awaitable, PyObject *arg);
+PyAPI_FUNC(PyObject *) _PyGen_FetchStopIterationValue2(void);
+PyAPI_FUNC(PyObject *) _PyGen_YieldFrom(PyGenObject *gen, PyObject *awaitable, PyObject *arg);
+void _PyGen_Finalize(PyObject *self);
 
-PyObject *_PyCoro2_GetAwaitableIter(PyObject *o);
+PyObject *_PyCoro_GetAwaitableIter(PyObject *o);
 
-static inline void
-PyGen2_SetPC(PyGenObject2 *gen, const uint8_t *pc)
-{
-    gen->base.thread.pc = pc;
-}
-
-static inline PyGenObject2 *
-PyGen2_FromThread(struct ThreadState *ts)
+static inline PyGenObject *
+PyGen_FromThread(struct ThreadState *ts)
 {
     assert(ts->thread_type == THREAD_GENERATOR);
-    return (PyGenObject2 *)((char*)ts - offsetof(PyGenObject2, base.thread));
+    return (PyGenObject *)((char*)ts - offsetof(PyGenObject, base.thread));
 }
 
 #ifdef __cplusplus

@@ -11,21 +11,20 @@ extern "C" {
 /* Forward declarations */
 struct pyruntimestate;
 struct _ceval_runtime_state;
-struct _frame;
 
-#include "pycore_pystate.h"   /* PyInterpreterState.eval_frame */
+#include "pycore_interp.h"   /* PyInterpreterState.eval_frame */
 
-PyAPI_FUNC(void) _Py_FinishPendingCalls(PyThreadState *tstate);
-PyAPI_FUNC(void) _PyEval_Initialize(struct _ceval_runtime_state *);
-PyAPI_FUNC(void) _PyEval_FiniThreads(
-    struct _ceval_runtime_state *ceval);
+extern void _Py_FinishPendingCalls(PyThreadState *tstate);
+extern void _PyEval_InitRuntimeState(struct _ceval_runtime_state *);
+extern int _PyEval_InitState(struct _ceval_state *ceval);
+extern void _PyEval_FiniState(struct _ceval_state *ceval);
 PyAPI_FUNC(int) _PyEval_AddPendingCall(
-    PyThreadState *tstate,
-    struct _ceval_runtime_state *ceval,
+    PyInterpreterState *interp,
     int (*func)(void *),
     void *arg);
-PyAPI_FUNC(void) _PyEval_ReInitThreads(
-    struct pyruntimestate *runtime);
+#ifdef HAVE_FORK
+extern void _PyEval_ReInitThreads(struct pyruntimestate *runtime);
+#endif
 PyAPI_FUNC(void) _PyEval_SetCoroutineOriginTrackingDepth(
     PyThreadState *tstate,
     int new_depth);
@@ -34,11 +33,10 @@ PyAPI_FUNC(void) _PyEval_SetCoroutineOriginTrackingDepth(
 void _PyEval_Fini(void);
 int _PyEval_HandleBreaker(PyThreadState *tstate);
 
-
 static inline PyObject*
-_PyEval_EvalFrame(PyThreadState *tstate, struct _frame *f, int throwflag)
+_PyEval_EvalFrame(PyThreadState *tstate, PyFrameObject *f, int throwflag)
 {
-    return tstate->interp->eval_frame(f, throwflag);
+    return tstate->interp->eval_frame(tstate, f, throwflag);
 }
 
 extern PyObject *_PyEval_EvalCode(
@@ -52,8 +50,76 @@ extern PyObject *_PyEval_EvalCode(
     PyObject *name, PyObject *qualname);
 
 int
-vm_frame_info(PyFunc **func, int *lineno, int depth,
-              bool skip_importlib_frames);
+vm_frame_info(PyFunctionObject **func, int *lineno, int depth,
+              int skip_importlib_frames);
+
+extern int _PyEval_ThreadsInitialized(struct pyruntimestate *runtime);
+extern PyStatus _PyEval_InitGIL(PyThreadState *tstate);
+extern void _PyEval_FiniGIL(PyThreadState *tstate);
+
+extern void _PyEval_ReleaseLock(PyThreadState *tstate);
+
+
+/* --- _Py_EnterRecursiveCall() ----------------------------------------- */
+
+PyAPI_DATA(int) _Py_CheckRecursionLimit;
+
+#ifdef USE_STACKCHECK
+/* With USE_STACKCHECK macro defined, trigger stack checks in
+   _Py_CheckRecursiveCall() on every 64th call to Py_EnterRecursiveCall. */
+static inline int _Py_MakeRecCheck(PyThreadState *tstate)  {
+    return (++tstate->recursion_depth > tstate->interp->ceval.recursion_limit
+            || ++tstate->stackcheck_counter > 64);
+}
+#else
+static inline int _Py_MakeRecCheck(PyThreadState *tstate) {
+    return (++tstate->recursion_depth > tstate->interp->ceval.recursion_limit);
+}
+#endif
+
+PyAPI_FUNC(int) _Py_CheckRecursiveCall(
+    PyThreadState *tstate,
+    const char *where);
+
+static inline int _Py_EnterRecursiveCall(PyThreadState *tstate,
+                                         const char *where) {
+    return (_Py_MakeRecCheck(tstate) && _Py_CheckRecursiveCall(tstate, where));
+}
+
+static inline int _Py_EnterRecursiveCall_inline(const char *where) {
+    PyThreadState *tstate = PyThreadState_GET();
+    return _Py_EnterRecursiveCall(tstate, where);
+}
+
+#define Py_EnterRecursiveCall(where) _Py_EnterRecursiveCall_inline(where)
+
+/* Compute the "lower-water mark" for a recursion limit. When
+ * Py_LeaveRecursiveCall() is called with a recursion depth below this mark,
+ * the overflowed flag is reset to 0. */
+static inline int _Py_RecursionLimitLowerWaterMark(int limit) {
+    if (limit > 200) {
+        return (limit - 50);
+    }
+    else {
+        return (3 * (limit >> 2));
+    }
+}
+
+static inline void _Py_LeaveRecursiveCall(PyThreadState *tstate)  {
+    tstate->recursion_depth--;
+    int limit = tstate->interp->ceval.recursion_limit;
+    if (tstate->recursion_depth < _Py_RecursionLimitLowerWaterMark(limit)) {
+        tstate->overflowed = 0;
+    }
+}
+
+static inline void _Py_LeaveRecursiveCall_inline(void)  {
+    PyThreadState *tstate = PyThreadState_GET();
+    _Py_LeaveRecursiveCall(tstate);
+}
+
+#define Py_LeaveRecursiveCall() _Py_LeaveRecursiveCall_inline()
+
 
 #ifdef __cplusplus
 }

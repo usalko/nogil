@@ -37,6 +37,38 @@ class DictTest(unittest.TestCase):
             dictliteral = '{' + ', '.join(formatted_items) + '}'
             self.assertEqual(eval(dictliteral), dict(items))
 
+    def test_merge_operator(self):
+
+        a = {0: 0, 1: 1, 2: 1}
+        b = {1: 1, 2: 2, 3: 3}
+
+        c = a.copy()
+        c |= b
+
+        self.assertEqual(a | b, {0: 0, 1: 1, 2: 2, 3: 3})
+        self.assertEqual(c, {0: 0, 1: 1, 2: 2, 3: 3})
+
+        c = b.copy()
+        c |= a
+
+        self.assertEqual(b | a, {1: 1, 2: 1, 3: 3, 0: 0})
+        self.assertEqual(c, {1: 1, 2: 1, 3: 3, 0: 0})
+
+        c = a.copy()
+        c |= [(1, 1), (2, 2), (3, 3)]
+
+        self.assertEqual(c, {0: 0, 1: 1, 2: 2, 3: 3})
+
+        self.assertIs(a.__or__(None), NotImplemented)
+        self.assertIs(a.__or__(()), NotImplemented)
+        self.assertIs(a.__or__("BAD"), NotImplemented)
+        self.assertIs(a.__or__(""), NotImplemented)
+
+        self.assertRaises(TypeError, a.__ior__, None)
+        self.assertEqual(a.__ior__(()), {0: 0, 1: 1, 2: 1})
+        self.assertRaises(ValueError, a.__ior__, "BAD")
+        self.assertEqual(a.__ior__(""), {0: 0, 1: 1, 2: 1})
+
     def test_bool(self):
         self.assertIs(not {}, True)
         self.assertTrue({1: 2})
@@ -934,7 +966,7 @@ class DictTest(unittest.TestCase):
         return dicts
 
     @support.cpython_only
-    @unittest.skip("split tables temporarily broken")
+    @unittest.skip("sgross: split tables temporarily broken")
     def test_splittable_setdefault(self):
         """split table must be combined when setdefault()
         breaks insertion order"""
@@ -952,7 +984,7 @@ class DictTest(unittest.TestCase):
         self.assertEqual(list(b), ['x', 'y', 'z', 'b', 'a'])
 
     @support.cpython_only
-    @unittest.skip("split tables temporarily broken")
+    @unittest.skip("sgross: split tables temporarily broken")
     def test_splittable_del(self):
         """split table must be combined when del d[k]"""
         a, b = self.make_shared_key_dict(2)
@@ -973,7 +1005,7 @@ class DictTest(unittest.TestCase):
         self.assertEqual(list(b), ['x', 'y', 'z'])
 
     @support.cpython_only
-    @unittest.skip("split tables temporarily broken")
+    @unittest.skip("sgross: split tables temporarily broken")
     def test_splittable_pop(self):
         """split table must be combined when d.pop(k)"""
         a, b = self.make_shared_key_dict(2)
@@ -995,7 +1027,7 @@ class DictTest(unittest.TestCase):
 
     @support.cpython_only
     def test_splittable_pop_pending(self):
-        """pop a pending key in a splitted table should not crash"""
+        """pop a pending key in a split table should not crash"""
         a, b = self.make_shared_key_dict(2)
 
         a['a'] = 4
@@ -1003,7 +1035,7 @@ class DictTest(unittest.TestCase):
             b.pop('a')
 
     @support.cpython_only
-    @unittest.skip("split tables temporarily broken")
+    @unittest.skip("sgross: split tables temporarily broken")
     def test_splittable_popitem(self):
         """split table must be combined when d.popitem()"""
         a, b = self.make_shared_key_dict(2)
@@ -1020,7 +1052,7 @@ class DictTest(unittest.TestCase):
         self.assertEqual(list(b), ['x', 'y', 'z'])
 
     @support.cpython_only
-    @unittest.skip("split tables temporarily broken")
+    @unittest.skip("sgross: split tables temporarily broken")
     def test_splittable_setattr_after_pop(self):
         """setattr() must not convert combined table into split table."""
         # Issue 28147
@@ -1303,6 +1335,19 @@ class DictTest(unittest.TestCase):
         d = {0: set()}
         (0, X()) in d.items()
 
+    def test_dict_contain_use_after_free(self):
+        # bpo-40489
+        class S(str):
+            def __eq__(self, other):
+                d.clear()
+                return NotImplemented
+
+            def __hash__(self):
+                return hash('test')
+
+        d = {S(): 'value'}
+        self.assertFalse('test' in d)
+
     def test_init_use_after_free(self):
         class X:
             def __hash__(self):
@@ -1334,7 +1379,7 @@ class DictTest(unittest.TestCase):
         self.assertRaises(StopIteration, next, r)
 
     def test_reverse_iterator_for_empty_dict(self):
-        # bpo-38525: revered iterator should work properly
+        # bpo-38525: reversed iterator should work properly
 
         # empty dict is directly used for reference count test
         self.assertEqual(list(reversed({})), [])
@@ -1387,6 +1432,25 @@ class DictTest(unittest.TestCase):
 
         d = CustomReversedDict(pairs)
         self.assertEqual(pairs[::-1], list(dict(d).items()))
+
+    @support.cpython_only
+    def test_dict_items_result_gc(self):
+        # bpo-42536: dict.items's tuple-reuse speed trick breaks the GC's
+        # assumptions about what can be untracked. Make sure we re-track result
+        # tuples whenever we reuse them.
+        it = iter({None: []}.items())
+        gc.collect()
+        # That GC collection probably untracked the recycled internal result
+        # tuple, which is initialized to (None, None). Make sure it's re-tracked
+        # when it's mutated and returned from __next__:
+        self.assertTrue(gc.is_tracked(next(it)))
+
+    @support.cpython_only
+    def test_dict_items_result_gc(self):
+        # Same as test_dict_items_result_gc above, but reversed.
+        it = reversed({None: []}.items())
+        gc.collect()
+        self.assertTrue(gc.is_tracked(next(it)))
 
 
 class CAPITest(unittest.TestCase):

@@ -17,12 +17,18 @@ from test.support import findfile, python_is_optimized
 
 def get_gdb_version():
     try:
-        proc = subprocess.Popen(["gdb", "-nx", "--version"],
+        cmd = ["gdb", "-nx", "--version"]
+        proc = subprocess.Popen(cmd,
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE,
                                 universal_newlines=True)
         with proc:
-            version = proc.communicate()[0]
+            version, stderr = proc.communicate()
+
+        if proc.returncode:
+            raise Exception(f"Command {' '.join(cmd)!r} failed "
+                            f"with exit code {proc.returncode}: "
+                            f"stdout={version!r} stderr={stderr!r}")
     except OSError:
         # This is what "no gdb" looks like.  There may, however, be other
         # errors that manifest this way too.
@@ -33,7 +39,8 @@ def get_gdb_version():
     # 'GNU gdb (GDB) Fedora 7.9.1-17.fc22\n' -> 7.9
     # 'GNU gdb 6.1.1 [FreeBSD]\n' -> 6.1
     # 'GNU gdb (GDB) Fedora (7.5.1-37.fc18)\n' -> 7.5
-    match = re.search(r"^GNU gdb.*?\b(\d+)\.(\d+)", version)
+    # 'HP gdb 6.7 for HP Itanium (32 or 64 bit) and target HP-UX 11iv2 and 11iv3.\n' -> 6.7
+    match = re.search(r"^(?:GNU|HP) gdb.*?\b(\d+)\.(\d+)", version)
     if match is None:
         raise Exception("unable to parse GDB version: %r" % version)
     return (version, int(match.group(1)), int(match.group(2)))
@@ -138,7 +145,8 @@ class DebuggerTests(unittest.TestCase):
     def get_stack_trace(self, source=None, script=None,
                         breakpoint=BREAKPOINT_FN,
                         cmds_after_breakpoint=None,
-                        import_site=False):
+                        import_site=False,
+                        ignore_stderr=False):
         '''
         Run 'python -c SOURCE' under gdb with a breakpoint.
 
@@ -217,8 +225,9 @@ class DebuggerTests(unittest.TestCase):
         # Use "args" to invoke gdb, capturing stdout, stderr:
         out, err = run_gdb(*args, PYTHONHASHSEED=PYTHONHASHSEED)
 
-        for line in err.splitlines():
-            print(line, file=sys.stderr)
+        if not ignore_stderr:
+            for line in err.splitlines():
+                print(line, file=sys.stderr)
 
         # bpo-34007: Sometimes some versions of the shared libraries that
         # are part of the traceback are compiled in optimised mode and the
@@ -229,6 +238,15 @@ class DebuggerTests(unittest.TestCase):
             raise unittest.SkipTest("gdb cannot walk the frame object"
                                     " because the Program Counter is"
                                     " not present")
+
+        # bpo-40019: Skip the test if gdb failed to read debug information
+        # because the Python binary is optimized.
+        for pattern in (
+            '(frame information optimized out)',
+            'Unable to read information on python frame',
+        ):
+            if pattern in out:
+                raise unittest.SkipTest(f"{pattern!r} found in gdb output")
 
         return out
 
@@ -650,25 +668,17 @@ id(a)''')
 
     def test_frames(self):
         gdb_output = self.get_stack_trace('''
+import sys
 def foo(a, b, c):
-    pass
-
-foo(3, 4, 5)
-id(foo.__code__)''',
+    id(sys._getframe(0))
+foo(3, 4, 5)''',
                                           breakpoint='builtin_id',
-                                          cmds_after_breakpoint=['print (PyFrameObject*)(((PyCodeObject*)v)->co_zombieframe)']
+                                          cmds_after_breakpoint=['print v']
                                           )
-        if sys.flags.nogil:
-            # nogil mode doesn't use zombie frames
-            self.assertTrue(re.match(r'.*\s+\$1 =\s+0x0.*',
-                                    gdb_output,
-                                    re.DOTALL),
-                            'Unexpected gdb representation: %r\n%s' % (gdb_output, gdb_output))
-        else:
-            self.assertTrue(re.match(r'.*\s+\$1 =\s+Frame 0x-?[0-9a-f]+, for file <string>, line 3, in foo \(\)\s+.*',
-                                    gdb_output,
-                                    re.DOTALL),
-                            'Unexpected gdb representation: %r\n%s' % (gdb_output, gdb_output))
+        self.assertTrue(re.match(r'.*\s+\$1 =\s+Frame 0x-?[0-9a-f]+, for file <string>, line 4, in foo \(\)\s+.*',
+                                gdb_output,
+                                re.DOTALL),
+                        'Unexpected gdb representation: %r\n%s' % (gdb_output, gdb_output))
 
 @unittest.skipIf(python_is_optimized(),
                  "Python was compiled with optimizations")
@@ -711,6 +721,23 @@ class PyListTests(DebuggerTests):
                            '   2    \n'
                            '   3    def foo(a, b, c):\n',
                            bt)
+
+SAMPLE_WITH_C_CALL = """
+
+from _testcapi import pyobject_fastcall
+
+def foo(a, b, c):
+    bar(a, b, c)
+
+def bar(a, b, c):
+    pyobject_fastcall(baz, (a, b, c))
+
+def baz(*args):
+    id(42)
+
+foo(1, 2, 3)
+
+"""
 
 class StackNavigationTests(DebuggerTests):
     @unittest.skipUnless(HAS_PYUP_PYDOWN, "test requires py-up/py-down commands")
@@ -870,8 +897,8 @@ id(42)
         # Various optimizations multiply the code paths by which these are
         # called, so test a variety of calling conventions.
         for func_name, args, expected_frame in (
-            ('meth_varargs', '', 1),
-            ('meth_varargs_keywords', '', 1),
+            ('meth_varargs', '', 2),
+            ('meth_varargs_keywords', '', 2),
             ('meth_o', '[]', 1),
             ('meth_noargs', '', 1),
             ('meth_fastcall', '', 1),
@@ -900,6 +927,9 @@ id(42)
                         cmd,
                         breakpoint=func_name,
                         cmds_after_breakpoint=['bt', 'py-bt'],
+                        # bpo-45207: Ignore 'Function "meth_varargs" not
+                        # defined.' message in stderr.
+                        ignore_stderr=True,
                     )
                     self.assertIn(f'<built-in method {func_name}', gdb_output)
 
@@ -908,6 +938,9 @@ id(42)
                         cmd,
                         breakpoint=func_name,
                         cmds_after_breakpoint=['py-bt-full'],
+                        # bpo-45207: Ignore 'Function "meth_varargs" not
+                        # defined.' message in stderr.
+                        ignore_stderr=True,
                     )
                     self.assertIn(
                         f'#{expected_frame} <built-in method {func_name}',
@@ -938,6 +971,31 @@ id(42)
                                           cmds_after_breakpoint=cmds_after_breakpoint)
         self.assertRegex(gdb_output,
                          r"<method-wrapper u?'__init__' of MyList object at ")
+
+    @unittest.skipIf(python_is_optimized(),
+                     "Python was compiled with optimizations")
+    def test_try_finally_lineno(self):
+        cmd = textwrap.dedent('''
+            def foo(x):
+                try:
+                    raise RuntimeError("error")
+                    return x
+                except:
+                    id("break point")
+                finally:
+                    x += 2
+                return x
+            r = foo(3)
+        ''')
+        gdb_output = self.get_stack_trace(cmd,
+                                          cmds_after_breakpoint=["py-bt"])
+        self.assertMultilineMatches(gdb_output,
+                                    r'''^.*
+Traceback \(most recent call first\):
+  <built-in method id of module object .*>
+  File "<string>", line 7, in foo
+  File "<string>", line 11, in <module>
+''')
 
 
 class PyPrintTests(DebuggerTests):

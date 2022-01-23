@@ -19,6 +19,12 @@ An enumeration is a set of symbolic names (members) bound to unique,
 constant values.  Within an enumeration, the members can be compared
 by identity, and the enumeration itself can be iterated over.
 
+.. note:: Case of Enum Members
+
+    Because Enums are used to represent constants we recommend using
+    UPPER_CASE names for enum members, and will be using that style
+    in our examples.
+
 
 Module Contents
 ---------------
@@ -50,6 +56,7 @@ helper, :class:`auto`.
     the bitwise operations without losing their :class:`Flag` membership.
 
 .. function:: unique
+    :noindex:
 
     Enum class decorator that ensures only one name is bound to any one value.
 
@@ -269,9 +276,13 @@ overridden::
 
 .. note::
 
-    The goal of the default :meth:`_generate_next_value_` methods is to provide
+    The goal of the default :meth:`_generate_next_value_` method is to provide
     the next :class:`int` in sequence with the last :class:`int` provided, but
     the way it does this is an implementation detail and may change.
+
+.. note::
+
+    The :meth:`_generate_next_value_` method must be defined before any members.
 
 Iteration
 ---------
@@ -876,6 +887,32 @@ Using an auto-numbering :meth:`__new__` would look like::
     >>> Color.GREEN.value
     2
 
+To make a more general purpose ``AutoNumber``, add ``*args`` to the signature::
+
+    >>> class AutoNumber(NoValue):
+    ...     def __new__(cls, *args):      # this is the only change from above
+    ...         value = len(cls.__members__) + 1
+    ...         obj = object.__new__(cls)
+    ...         obj._value_ = value
+    ...         return obj
+    ...
+
+Then when you inherit from ``AutoNumber`` you can write your own ``__init__``
+to handle any extra arguments::
+
+    >>> class Swatch(AutoNumber):
+    ...     def __init__(self, pantone='unknown'):
+    ...         self.pantone = pantone
+    ...     AUBURN = '3497'
+    ...     SEA_GREEN = '1246'
+    ...     BLEACHED_CORAL = () # New color, no Pantone code yet!
+    ...
+    >>> Swatch.SEA_GREEN
+    <Swatch.SEA_GREEN: 2>
+    >>> Swatch.SEA_GREEN.pantone
+    '1246'
+    >>> Swatch.BLEACHED_CORAL.pantone
+    'unknown'
 
 .. note::
 
@@ -1084,6 +1121,15 @@ and raise an error if the two do not match::
     In Python 2 code the :attr:`_order_` attribute is necessary as definition
     order is lost before it can be recorded.
 
+
+_Private__names
+"""""""""""""""
+
+:ref:`Private names <private-name-mangling>` will be normal attributes in Python 3.11 instead of either an error
+or a member (depending on if the name ends with an underscore). Using these names
+in 3.9 and 3.10 will issue a :exc:`DeprecationWarning`.
+
+
 ``Enum`` member type
 """"""""""""""""""""
 
@@ -1103,6 +1149,10 @@ all-uppercase names for members)::
     <FieldTypes.size: 2>
     >>> FieldTypes.size.value
     2
+
+.. note::
+
+   This behavior is deprecated and will be removed in 3.11.
 
 .. versionchanged:: 3.5
 
@@ -1154,3 +1204,8 @@ all named flags and all named combinations of flags that are in the value::
     >>> Color(7)      # not named combination
     <Color.CYAN|MAGENTA|BLUE|YELLOW|GREEN|RED: 7>
 
+.. note::
+
+   In 3.11 unnamed combinations of flags will only produce the canonical flag
+   members (aka single-value flags).  So ``Color(7)`` would produce something
+   like ``<Color.BLUE|GREEN|RED: 7>``.

@@ -43,6 +43,7 @@ Functions:
 * :c:func:`Py_PreInitializeFromArgs`
 * :c:func:`Py_PreInitializeFromBytesArgs`
 * :c:func:`Py_RunMain`
+* :c:func:`Py_GetArgcArgv`
 
 The preconfiguration (``PyPreConfig`` type) is stored in
 ``_PyRuntime.preconfig`` and the configuration (``PyConfig`` type) is stored in
@@ -196,12 +197,12 @@ PyPreConfig
 
    Function to initialize a preconfiguration:
 
-   .. c:function:: void PyPreConfig_InitIsolatedConfig(PyPreConfig *preconfig)
+   .. c:function:: void PyPreConfig_InitPythonConfig(PyPreConfig *preconfig)
 
       Initialize the preconfiguration with :ref:`Python Configuration
       <init-python-config>`.
 
-   .. c:function:: void PyPreConfig_InitPythonConfig(PyPreConfig *preconfig)
+   .. c:function:: void PyPreConfig_InitIsolatedConfig(PyPreConfig *preconfig)
 
       Initialize the preconfiguration with :ref:`Isolated Configuration
       <init-isolated-conf>`.
@@ -436,6 +437,14 @@ PyConfig
 
       :data:`sys.base_prefix`.
 
+   .. c:member:: wchar_t* platlibdir
+
+      :data:`sys.platlibdir`: platform library directory name, set at configure time
+      by ``--with-platlibdir``, overrideable by the ``PYTHONPLATLIBDIR``
+      environment variable.
+
+      .. versionadded:: 3.9
+
    .. c:member:: int buffered_stdio
 
       If equals to 0, enable unbuffered mode, making the stdout and stderr
@@ -472,7 +481,7 @@ PyConfig
 
       If non-zero, dump all objects which are still alive at exit.
 
-      Require a debug build of Python (``Py_REF_DEBUG`` macro must be defined).
+      ``Py_TRACE_REFS`` macro must be defined in build.
 
    .. c:member:: wchar_t* exec_prefix
 
@@ -686,6 +695,16 @@ PyConfig
 
       :data:`sys._xoptions`.
 
+   .. c:member:: int _use_peg_parser
+
+      Enable PEG parser? Default: 1.
+
+      Set to 0 by :option:`-X oldparser <-X>` and :envvar:`PYTHONOLDPARSER`.
+
+      See also :pep:`617`.
+
+      .. deprecated-removed:: 3.9 3.10
+
 If ``parse_argv`` is non-zero, ``argv`` arguments are parsed the same
 way the regular Python parses command line arguments, and Python
 arguments are stripped from ``argv``: see :ref:`Command Line Arguments
@@ -711,9 +730,12 @@ Function to initialize Python:
 The caller is responsible to handle exceptions (error or exit) using
 :c:func:`PyStatus_Exception` and :c:func:`Py_ExitStatusException`.
 
-If ``PyImport_FrozenModules``, ``PyImport_AppendInittab()`` or
-``PyImport_ExtendInittab()`` are used, they must be set or called after Python
-preinitialization and before the Python initialization.
+If :c:func:`PyImport_FrozenModules`, :c:func:`PyImport_AppendInittab` or
+:c:func:`PyImport_ExtendInittab` are used, they must be set or called after
+Python preinitialization and before the Python initialization. If Python is
+initialized multiple times, :c:func:`PyImport_AppendInittab` or
+:c:func:`PyImport_ExtendInittab` must be called before each Python
+initialization.
 
 Example setting the program name::
 
@@ -874,6 +896,7 @@ Path Configuration
 * Path configuration inputs:
 
   * :c:member:`PyConfig.home`
+  * :c:member:`PyConfig.platlibdir`
   * :c:member:`PyConfig.pathconfig_warnings`
   * :c:member:`PyConfig.program_name`
   * :c:member:`PyConfig.pythonpath_env`
@@ -965,6 +988,14 @@ customized Python always running in isolated mode using
 :c:func:`Py_RunMain`.
 
 
+Py_GetArgcArgv()
+----------------
+
+.. c:function:: void Py_GetArgcArgv(int *argc, wchar_t ***argv)
+
+   Get the original command line arguments, before Python modified them.
+
+
 Multi-Phase Initialization Private Provisional API
 --------------------------------------------------
 
@@ -994,6 +1025,8 @@ Private provisional API:
 
 * :c:member:`PyConfig._init_main`: if set to 0,
   :c:func:`Py_InitializeFromConfig` stops at the "Core" initialization phase.
+* :c:member:`PyConfig._isolated_interpreter`: if non-zero,
+  disallow threads, subprocesses and fork.
 
 .. c:function:: PyStatus _Py_InitializeMain(void)
 

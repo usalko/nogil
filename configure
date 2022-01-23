@@ -631,6 +631,8 @@ SRCDIRS
 THREADHEADERS
 LIBPL
 PY_ENABLE_SHARED
+PLATLIBDIR
+BINLIBDEST
 LIBPYTHON
 EXT_SUFFIX
 ALT_SOABI
@@ -657,6 +659,7 @@ LIBFFI_INCLUDEDIR
 PKG_CONFIG_LIBDIR
 PKG_CONFIG_PATH
 PKG_CONFIG
+TZPATH
 SHLIBS
 CFLAGSFORSHARED
 LINKFORSHARED
@@ -686,6 +689,7 @@ PROFILE_TASK
 DEF_MAKE_RULE
 DEF_MAKE_ALL_RULE
 ABIFLAGS
+NOGIL_VERSION
 LN
 MKDIR_P
 INSTALL_DATA
@@ -697,6 +701,8 @@ ARFLAGS
 ac_ct_AR
 AR
 GNULD
+EXPORTSFROM
+EXPORTSYMS
 LINKCC
 LDVERSION
 RUNSHARED
@@ -742,6 +748,7 @@ PYTHONFRAMEWORKPREFIX
 PYTHONFRAMEWORKDIR
 PYTHONFRAMEWORKIDENTIFIER
 PYTHONFRAMEWORK
+LIPO_INTEL64_FLAGS
 LIPO_32BIT_FLAGS
 ARCH_RUN_32BIT
 UNIVERSALSDK
@@ -814,11 +821,11 @@ with_suffix
 enable_shared
 enable_profiling
 with_pydebug
-with_trace_refs
 with_assertions
 enable_optimizations
 with_lto
 with_hash_algorithm
+with_tzpath
 with_address_sanitizer
 with_memory_sanitizer
 with_undefined_behavior_sanitizer
@@ -826,6 +833,7 @@ with_libs
 with_system_expat
 with_system_ffi
 with_system_libmpdec
+with_decimal_contextvar
 enable_loadable_sqlite_extensions
 with_tcltk_includes
 with_tcltk_libs
@@ -839,10 +847,12 @@ with_dtrace
 with_libm
 with_libc
 enable_big_digits
+with_platlibdir
 with_computed_gotos
 with_ensurepip
 with_openssl
 with_ssl_default_suites
+with_builtin_hashlib_hashes
 '
       ac_precious_vars='build_alias
 host_alias
@@ -1510,11 +1520,12 @@ Optional Packages:
   --with-PACKAGE[=ARG]    use PACKAGE [ARG=yes]
   --without-PACKAGE       do not use PACKAGE (same as --with-PACKAGE=no)
   --with-universal-archs=ARCH
-                          specify the kind of universal binary that should be
-                          created. this option is only valid when
+                          specify the kind of macOS universal binary that
+                          should be created. This option is only valid when
                           --enable-universalsdk is set; options are:
-                          ("universal2", "32-bit", "64-bit", "3-way", "intel",
-                          "intel-32", "intel-64", or "all") see Mac/README.rst
+                          ("universal2", "intel-64", "intel-32", "intel",
+                          "32-bit", "64-bit", "3-way", or "all") see
+                          Mac/README.rst
   --with-framework-name=FRAMEWORK
                           specify the name for the python framework on macOS
                           only valid when --enable-framework is set. see
@@ -1524,14 +1535,15 @@ Optional Packages:
                           compiler specified in COMPILER (default is $CXX)
   --with-suffix=SUFFIX    set executable suffix to SUFFIX (default is '.exe')
   --with-pydebug          build with Py_DEBUG defined (default is no)
-  --with-trace-refs       enable tracing references for debugging purpose
-                          (default is no)
   --with-assertions       build with C assertions enabled (default is no)
   --with-lto              enable Link-Time-Optimization in any build (default
                           is no)
   --with-hash-algorithm=[fnv|siphash24]
                           select hash algorithm for use in Python/pyhash.c
                           (default is SipHash24)
+  --with-tzpath=<list of absolute paths separated by pathsep>
+                           Select the default time zone search path for zoneinfo.TZPATH
+
   --with-address-sanitizer
                           enable AddressSanitizer memory error detector,
                           'asan' (default is no)
@@ -1548,6 +1560,9 @@ Optional Packages:
                           system-dependent)
   --with-system-libmpdec  build _decimal module using an installed libmpdec
                           library, see Doc/library/decimal.rst (default is no)
+  --with-decimal-contextvar
+                          build _decimal module using a coroutine-local rather
+                          than a thread-local context (default is yes)
   --with-tcltk-includes='-I...'
                           override search for Tcl and Tk include files
   --with-tcltk-libs='-L...'
@@ -1567,18 +1582,23 @@ Optional Packages:
                           system-dependent)
   --with-libc=STRING      override libc C library to STRING (default is
                           system-dependent)
+  --with-platlibdir=DIRNAME
+                          Python library directory name (default is "lib")
   --with-computed-gotos   enable computed gotos in evaluation loop (enabled by
                           default on supported compilers)
   --with-ensurepip[=install|upgrade|no]
                           "install" or "upgrade" using bundled pip (default is
                           upgrade)
-  --with-openssl=DIR      override root of the OpenSSL directory to DIR
+  --with-openssl=DIR      root of the OpenSSL directory
   --with-ssl-default-suites=[python|openssl|STRING]
                           override default cipher suites string, python: use
                           Python's preferred selection (default), openssl:
                           leave OpenSSL's defaults untouched, STRING: use a
                           custom string, PROTOCOL_SSLv2 ignores the setting,
                           see Doc/library/ssl.rst
+  --with-builtin-hashlib-hashes=md5,sha1,sha256,sha512,sha3,blake2
+                          builtin hash modules, md5, sha1, sha256, sha512,
+                          sha3 (with shake), blake2
 
 Some influential environment variables:
   MACHDEP     name for machine-dependent library files
@@ -3107,6 +3127,7 @@ then
 fi
 
 
+
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for --with-universal-archs" >&5
 $as_echo_n "checking for --with-universal-archs... " >&6; }
 
@@ -3440,6 +3461,12 @@ $as_echo "#define _BSD_SOURCE 1" >>confdefs.h
   # On VxWorks, defining _XOPEN_SOURCE causes compile failures
   # in network headers still using system V types.
   VxWorks/*)
+    define_xopen_source=no
+    ;;
+
+  # On HP-UX, defining _XOPEN_SOURCE to 600 or greater hides
+  # chroot() and other functions
+  hp*|HP*)
     define_xopen_source=no
     ;;
 
@@ -5183,9 +5210,6 @@ $as_echo "$as_me:
 fi
 
 
-MULTIARCH=$($CC --print-multiarch 2>/dev/null)
-
-
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for the platform triplet based on compiler characteristics" >&5
 $as_echo_n "checking for the platform triplet based on compiler characteristics... " >&6; }
 cat >> conftest.c <<EOF
@@ -5343,6 +5367,11 @@ else
 $as_echo "none" >&6; }
 fi
 rm -f conftest.c conftest.out
+
+if test x$PLATFORM_TRIPLET != xdarwin; then
+  MULTIARCH=$($CC --print-multiarch 2>/dev/null)
+fi
+
 
 if test x$PLATFORM_TRIPLET != x && test x$MULTIARCH != x; then
   if test x$PLATFORM_TRIPLET != x$MULTIARCH; then
@@ -5787,8 +5816,6 @@ LDVERSION="$VERSION"
 # If CXX is set, and if it is needed to link a main function that was
 # compiled with CXX, LINKCC is CXX instead. Always using CXX is undesirable:
 # python might then depend on the C++ runtime
-# This is altered for AIX in order to build the export list before
-# linking.
 
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking LINKCC" >&5
 $as_echo_n "checking LINKCC... " >&6; }
@@ -5796,13 +5823,6 @@ if test -z "$LINKCC"
 then
 	LINKCC='$(PURIFY) $(MAINCC)'
 	case $ac_sys_system in
-	AIX*)
-	   exp_extra="\"\""
-	   if test $ac_sys_release -ge 5 -o \
-		   $ac_sys_release -eq 4 -a `uname -r` -ge 2 ; then
-	       exp_extra="."
-	   fi
-	   LINKCC="\$(srcdir)/Modules/makexp_aix Modules/python.exp $exp_extra \$(LIBRARY); $LINKCC";;
 	QNX*)
 	   # qcc must be used because the other compilers do not
 	   # support -N.
@@ -5811,6 +5831,26 @@ then
 fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $LINKCC" >&5
 $as_echo "$LINKCC" >&6; }
+
+# EXPORTSYMS holds the list of exported symbols for AIX.
+# EXPORTSFROM holds the module name exporting symbols on AIX.
+EXPORTSYMS=
+EXPORTSFROM=
+
+
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking EXPORTSYMS" >&5
+$as_echo_n "checking EXPORTSYMS... " >&6; }
+case $ac_sys_system in
+AIX*)
+	EXPORTSYMS="Modules/python.exp"
+	if test $ac_sys_release -ge 5 -o \
+		$ac_sys_release -eq 4 -a `uname -r` -ge 2 ; then
+	    EXPORTSFROM=. # the main executable
+	fi
+	;;
+esac
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $EXPORTSYMS" >&5
+$as_echo "$EXPORTSYMS" >&6; }
 
 # GNULD is set to "yes" if the GNU linker is used.  If this goes wrong
 # make sure we default having it set to "no": this is used by
@@ -6347,6 +6387,10 @@ if test -z "$LN" ; then
 	esac
 fi
 
+# nogil release version
+
+NOGIL_VERSION="b"
+
 # For calculating the .so ABI tag.
 
 ABIFLAGS=""
@@ -6378,25 +6422,18 @@ fi
 
 # Check for --with-trace-refs
 # --with-trace-refs
-{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for --with-trace-refs" >&5
-$as_echo_n "checking for --with-trace-refs... " >&6; }
-
-# Check whether --with-trace-refs was given.
-if test "${with_trace_refs+set}" = set; then :
-  withval=$with_trace_refs;
-else
-  with_trace_refs=no
-fi
-
-{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $with_trace_refs" >&5
-$as_echo "$with_trace_refs" >&6; }
-
-if test "$with_trace_refs" = "yes"
-then
-
-$as_echo "#define Py_TRACE_REFS 1" >>confdefs.h
-
-fi
+# AC_MSG_CHECKING(for --with-trace-refs)
+# AC_ARG_WITH(trace-refs,
+#   AS_HELP_STRING(
+#     [--with-trace-refs],
+#     [enable tracing references for debugging purpose (default is no)]),,
+#   with_trace_refs=no)
+# AC_MSG_RESULT($with_trace_refs)
+#
+# if test "$with_trace_refs" = "yes"
+# then
+#   AC_DEFINE(Py_TRACE_REFS, 1, [Define if you want to enable tracing references for debugging purpose])
+# fi
 
 # Check for --with-assertions.
 # This allows enabling assertions without Py_DEBUG.
@@ -6626,10 +6663,11 @@ fi
       fi
       if test "$ac_sys_system" = "Darwin" -a "${LLVM_AR_FOUND}" = "not-found"
       then
-        found_llvm_ar=`/usr/bin/xcrun -find llvm-ar 2>/dev/null`
+        # The Apple-supplied ar in Xcode or the Command Line Tools is apparently sufficient
+        found_llvm_ar=`/usr/bin/xcrun -find ar 2>/dev/null`
         if test -n "${found_llvm_ar}"
         then
-          LLVM_AR='/usr/bin/xcrun llvm-ar'
+          LLVM_AR='/usr/bin/xcrun ar'
           LLVM_AR_FOUND=found
           { $as_echo "$as_me:${as_lineno-$LINENO}: llvm-ar found via xcrun: ${LLVM_AR}" >&5
 $as_echo "$as_me: llvm-ar found via xcrun: ${LLVM_AR}" >&6;}
@@ -6647,6 +6685,7 @@ $as_echo "$as_me: llvm-ar found via xcrun: ${LLVM_AR}" >&6;}
         Darwin*)
           # Any changes made here should be reflected in the GCC+Darwin case below
           LTOFLAGS="-flto -Wl,-export_dynamic"
+          LTOCFLAGS="-flto"
           ;;
         *)
           LTOFLAGS="-flto"
@@ -6657,6 +6696,7 @@ $as_echo "$as_me: llvm-ar found via xcrun: ${LLVM_AR}" >&6;}
       case $ac_sys_system in
         Darwin*)
           LTOFLAGS="-flto -Wl,-export_dynamic"
+          LTOCFLAGS="-flto"
           ;;
         *)
           LTOFLAGS="-flto -fuse-linker-plugin -ffat-lto-objects -flto-partition=none"
@@ -6672,7 +6712,7 @@ $as_echo "$as_me: llvm-ar found via xcrun: ${LLVM_AR}" >&6;}
       LTOFLAGS="$LTOFLAGS -g"
   fi
 
-  CFLAGS_NODIST="$CFLAGS_NODIST $LTOFLAGS"
+  CFLAGS_NODIST="$CFLAGS_NODIST ${LTOCFLAGS-$LTOFLAGS}"
   LDFLAGS_NODIST="$LDFLAGS_NODIST $LTOFLAGS"
 fi
 
@@ -7442,6 +7482,7 @@ $as_echo_n "checking which compiler should be used... " >&6; }
 $as_echo "$CC" >&6; }
         fi
 
+        LIPO_INTEL64_FLAGS=""
         if test "${enable_universalsdk}"
         then
             case "$UNIVERSAL_ARCHS" in
@@ -7463,8 +7504,9 @@ $as_echo "$CC" >&6; }
             universal2)
                UNIVERSAL_ARCH_FLAGS="-arch arm64 -arch x86_64"
                LIPO_32BIT_FLAGS=""
+               LIPO_INTEL64_FLAGS="-extract x86_64"
                ARCH_RUN_32BIT="true"
-		;;
+               ;;
             intel)
                UNIVERSAL_ARCH_FLAGS="-arch i386 -arch x86_64"
                LIPO_32BIT_FLAGS="-extract i386"
@@ -7555,6 +7597,31 @@ $as_echo_n "checking which MACOSX_DEPLOYMENT_TARGET to use... " >&6; }
         { $as_echo "$as_me:${as_lineno-$LINENO}: result: $MACOSX_DEPLOYMENT_TARGET" >&5
 $as_echo "$MACOSX_DEPLOYMENT_TARGET" >&6; }
 
+        { $as_echo "$as_me:${as_lineno-$LINENO}: checking if specified universal architectures work" >&5
+$as_echo_n "checking if specified universal architectures work... " >&6; }
+        cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+#include <stdio.h>
+int
+main ()
+{
+printf("%d", 42);
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_link "$LINENO"; then :
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+$as_echo "yes" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+             as_fn_error $? "check config.log and use the '--with-universal-archs' option" "$LINENO" 5
+
+fi
+rm -f core conftest.err conftest.$ac_objext \
+    conftest$ac_exeext conftest.$ac_ext
+
         # end of Darwin* tests
         ;;
     esac
@@ -7572,10 +7639,13 @@ $as_echo "$MACOSX_DEPLOYMENT_TARGET" >&6; }
     ;;
 esac
 
-# ICC needs -fp-model strict or floats behave badly
 case "$CC" in
 *icc*)
+    # ICC needs -fp-model strict or floats behave badly
     CFLAGS_NODIST="$CFLAGS_NODIST -fp-model strict"
+    ;;
+*xlc*)
+    CFLAGS_NODIST="$CFLAGS_NODIST -qalias=noansi -qmaxmem=-1"
     ;;
 esac
 
@@ -8289,8 +8359,8 @@ fi
 done
 
 
-# On Linux, can.h and can/raw.h require sys/socket.h
-for ac_header in linux/can.h linux/can/raw.h linux/can/bcm.h
+# On Linux, can.h, can/bcm.h, can/j1939.h, can/raw.h require sys/socket.h
+for ac_header in linux/can.h linux/can/bcm.h linux/can/j1939.h linux/can/raw.h
 do :
   as_ac_Header=`$as_echo "ac_cv_header_$ac_header" | $as_tr_sh`
 ac_fn_c_check_header_compile "$LINENO" "$ac_header" "$as_ac_Header" "
@@ -9861,6 +9931,75 @@ $as_echo "no" >&6; }
 fi
 rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
 
+save_LIBS=$LIBS
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for library containing uuid_generate_time_safe" >&5
+$as_echo_n "checking for library containing uuid_generate_time_safe... " >&6; }
+if ${ac_cv_search_uuid_generate_time_safe+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  ac_func_search_save_LIBS=$LIBS
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+/* Override any GCC internal prototype to avoid an error.
+   Use char because int might match the return type of a GCC
+   builtin and then its argument prototype would still apply.  */
+#ifdef __cplusplus
+extern "C"
+#endif
+char uuid_generate_time_safe ();
+int
+main ()
+{
+return uuid_generate_time_safe ();
+  ;
+  return 0;
+}
+_ACEOF
+for ac_lib in '' uuid; do
+  if test -z "$ac_lib"; then
+    ac_res="none required"
+  else
+    ac_res=-l$ac_lib
+    LIBS="-l$ac_lib  $ac_func_search_save_LIBS"
+  fi
+  if ac_fn_c_try_link "$LINENO"; then :
+  ac_cv_search_uuid_generate_time_safe=$ac_res
+fi
+rm -f core conftest.err conftest.$ac_objext \
+    conftest$ac_exeext
+  if ${ac_cv_search_uuid_generate_time_safe+:} false; then :
+  break
+fi
+done
+if ${ac_cv_search_uuid_generate_time_safe+:} false; then :
+
+else
+  ac_cv_search_uuid_generate_time_safe=no
+fi
+rm conftest.$ac_ext
+LIBS=$ac_func_search_save_LIBS
+fi
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_search_uuid_generate_time_safe" >&5
+$as_echo "$ac_cv_search_uuid_generate_time_safe" >&6; }
+ac_res=$ac_cv_search_uuid_generate_time_safe
+if test "$ac_res" != no; then :
+  test "$ac_res" = "none required" || LIBS="$ac_res $LIBS"
+
+
+$as_echo "#define HAVE_LIBUUID 1" >>confdefs.h
+,
+    { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+$as_echo "yes" >&6; }
+
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+
+fi
+
+LIBS=$save_LIBS
+
 # AIX provides support for RFC4122 (uuid) in libc.a starting with AIX 6.1 (anno 2007)
 # FreeBSD and OpenBSD provides support as well
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for uuid_create" >&5
@@ -10154,6 +10293,47 @@ else
   { $as_echo "$as_me:${as_lineno-$LINENO}: result: default" >&5
 $as_echo "default" >&6; }
 fi
+
+
+validate_tzpath() {
+    # Checks that each element of hte path is an absolute path
+    if test -z "$1"; then
+        # Empty string is allowed: it indicates no system TZPATH
+        return 0
+    fi
+
+    # Bad paths are those that don't start with /
+        if ( echo $1 | grep -qE '(^|:)([^/]|$)' ); then
+        as_fn_error $? "--with-tzpath must contain only absolute paths, not $1" "$LINENO" 5
+        return 1;
+    fi
+}
+
+TZPATH="/usr/share/zoneinfo:/usr/lib/zoneinfo:/usr/share/lib/zoneinfo:/etc/zoneinfo"
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for --with-tzpath" >&5
+$as_echo_n "checking for --with-tzpath... " >&6; }
+
+# Check whether --with-tzpath was given.
+if test "${with_tzpath+set}" = set; then :
+  withval=$with_tzpath;
+case "$withval" in
+    yes)
+        as_fn_error $? "--with-tzpath requires a value" "$LINENO" 5
+        ;;
+    *)
+        validate_tzpath "$withval"
+        TZPATH="$withval"
+        { $as_echo "$as_me:${as_lineno-$LINENO}: result: \"$withval\"" >&5
+$as_echo "\"$withval\"" >&6; }
+        ;;
+esac
+
+else
+  validate_tzpath "$TZPATH"
+ { $as_echo "$as_me:${as_lineno-$LINENO}: result: \"$TZPATH\"" >&5
+$as_echo "\"$TZPATH\"" >&6; }
+fi
+
 
 
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for --with-address-sanitizer" >&5
@@ -10501,6 +10681,28 @@ fi
 
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $with_system_libmpdec" >&5
 $as_echo "$with_system_libmpdec" >&6; }
+
+# Check whether _decimal should use a coroutine-local or thread-local context
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for --with-decimal-contextvar" >&5
+$as_echo_n "checking for --with-decimal-contextvar... " >&6; }
+
+# Check whether --with-decimal_contextvar was given.
+if test "${with_decimal_contextvar+set}" = set; then :
+  withval=$with_decimal_contextvar;
+else
+  with_decimal_contextvar="yes"
+fi
+
+
+if test "$with_decimal_contextvar" != "no"
+then
+
+$as_echo "#define WITH_DECIMAL_CONTEXTVAR 1" >>confdefs.h
+
+fi
+
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $with_decimal_contextvar" >&5
+$as_echo "$with_decimal_contextvar" >&6; }
 
 # Check for support for loadable sqlite extensions
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for --enable-loadable-sqlite-extensions" >&5
@@ -10960,10 +11162,10 @@ else
       main() {
         pthread_attr_t attr;
         pthread_t id;
-        if (pthread_attr_init(&attr)) exit(-1);
-        if (pthread_attr_setscope(&attr, PTHREAD_SCOPE_SYSTEM)) exit(-1);
-        if (pthread_create(&id, &attr, foo, NULL)) exit(-1);
-        exit(0);
+        if (pthread_attr_init(&attr)) return (-1);
+        if (pthread_attr_setscope(&attr, PTHREAD_SCOPE_SYSTEM)) return (-1);
+        if (pthread_create(&id, &attr, foo, NULL)) return (-1);
+        return (0);
       }
 _ACEOF
 if ac_fn_c_try_run "$LINENO"; then :
@@ -11295,6 +11497,36 @@ $as_echo "no" >&6; }
 fi
 rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
 
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for CAN_RAW_JOIN_FILTERS" >&5
+$as_echo_n "checking for CAN_RAW_JOIN_FILTERS... " >&6; }
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+#include <linux/can/raw.h>
+int
+main ()
+{
+int can_raw_join_filters = CAN_RAW_JOIN_FILTERS;
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"; then :
+
+
+$as_echo "#define HAVE_LINUX_CAN_RAW_JOIN_FILTERS 1" >>confdefs.h
+
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+$as_echo "yes" >&6; }
+
+else
+
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
+
 # Check for --with-doc-strings
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for --with-doc-strings" >&5
 $as_echo_n "checking for --with-doc-strings... " >&6; }
@@ -11475,7 +11707,7 @@ if ${ac_cv_dtrace_link+:} false; then :
 else
               ac_cv_dtrace_link=no
             echo 'BEGIN{}' > conftest.d
-            "$DTRACE" "$DFLAGS" -G -s conftest.d -o conftest.o > /dev/null 2>&1 && \
+            "$DTRACE" $DFLAGS -G -s conftest.d -o conftest.o > /dev/null 2>&1 && \
                 ac_cv_dtrace_link=yes
 
 fi
@@ -11573,7 +11805,7 @@ for ac_func in alarm accept4 setitimer getitimer bind_textdomain_codeset chown \
  posix_fallocate posix_fadvise posix_spawn posix_spawnp pread preadv preadv2 \
  pthread_condattr_setclock pthread_init pthread_kill pwrite pwritev pwritev2 \
  readlink readlinkat readv realpath renameat \
- sem_open sem_timedwait sem_getvalue sem_unlink sendfile setegid seteuid \
+ sem_open sem_timedwait sem_clockwait sem_getvalue sem_unlink sendfile setegid seteuid \
  setgid sethostname \
  setlocale setregid setreuid setresuid setresgid setsid setpgid setpgrp setpriority setuid setvbuf \
  sched_get_priority_max sched_setaffinity sched_setscheduler sched_setparam \
@@ -14941,7 +15173,7 @@ else
   int main()
   {
 	/* Success: exit code 0 */
-        exit((((wchar_t) -1) < ((wchar_t) 0)) ? 0 : 1);
+        return ((((wchar_t) -1) < ((wchar_t) 0)) ? 0 : 1);
   }
 
 _ACEOF
@@ -14975,6 +15207,22 @@ else
   { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
 $as_echo "no" >&6; }
 fi
+
+case $ac_sys_system/$ac_sys_release in
+SunOS/*)
+  if test -f /etc/os-release; then
+    OS_NAME=$(awk -F= '/^NAME=/ {print substr($2,2,length($2)-2)}' /etc/os-release)
+    if test "x$OS_NAME" = "xOracle Solaris"; then
+      # bpo-43667: In Oracle Solaris, the internal form of wchar_t in
+      # non-Unicode locales is not Unicode and hence cannot be used directly.
+      # https://docs.oracle.com/cd/E37838_01/html/E61053/gmwke.html
+
+$as_echo "#define HAVE_NON_UNICODE_WCHAR_T_REPRESENTATION 1" >>confdefs.h
+
+    fi
+  fi
+  ;;
+esac
 
 # check for endianness
  { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether byte ordering is bigendian" >&5
@@ -15224,7 +15472,7 @@ $as_echo_n "checking ABIFLAGS... " >&6; }
 $as_echo "$ABIFLAGS" >&6; }
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking SOABI" >&5
 $as_echo_n "checking SOABI... " >&6; }
-SOABI='nogil-'`echo $VERSION | tr -d .`${ABIFLAGS}${PLATFORM_TRIPLET:+-$PLATFORM_TRIPLET}
+SOABI='nogil-'`echo $VERSION | tr -d .`${NOGIL_VERSION}${ABIFLAGS}${PLATFORM_TRIPLET:+-$PLATFORM_TRIPLET}
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $SOABI" >&5
 $as_echo "$SOABI" >&6; }
 
@@ -15232,7 +15480,7 @@ $as_echo "$SOABI" >&6; }
 if test "$Py_DEBUG" = 'true' -a "$with_trace_refs" != "yes"; then
   # Similar to SOABI but remove "d" flag from ABIFLAGS
 
-  ALT_SOABI='nogil-'`echo $VERSION | tr -d .``echo $ABIFLAGS | tr -d d`${PLATFORM_TRIPLET:+-$PLATFORM_TRIPLET}
+  ALT_SOABI='nogil-'`echo $VERSION | tr -d .`${NOGIL_VERSION}`echo $ABIFLAGS | tr -d d`${PLATFORM_TRIPLET:+-$PLATFORM_TRIPLET}
 
 cat >>confdefs.h <<_ACEOF
 #define ALT_SOABI "${ALT_SOABI}"
@@ -15241,12 +15489,7 @@ _ACEOF
 fi
 
 
-case $ac_sys_system in
-    Linux*|GNU*|Darwin|VxWorks)
-	EXT_SUFFIX=.${SOABI}${SHLIB_SUFFIX};;
-    *)
-	EXT_SUFFIX=${SHLIB_SUFFIX};;
-esac
+EXT_SUFFIX=.${SOABI}${SHLIB_SUFFIX}
 
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking LDVERSION" >&5
 $as_echo_n "checking LDVERSION... " >&6; }
@@ -15263,10 +15506,46 @@ else
 fi
 
 
-if test x$PLATFORM_TRIPLET = x; then
-  LIBPL='$(prefix)'"/lib/python${VERSION}/config-${LDVERSION}"
+
+BINLIBDEST='$(LIBDIR)/python$(VERSION)'
+
+
+# Check for --with-platlibdir
+# /usr/$LIDIRNAME/python$VERSION
+
+PLATLIBDIR="lib"
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for --with-platlibdir" >&5
+$as_echo_n "checking for --with-platlibdir... " >&6; }
+
+# Check whether --with-platlibdir was given.
+if test "${with_platlibdir+set}" = set; then :
+  withval=$with_platlibdir;
+# ignore 3 options:
+#   --with-platlibdir
+#   --with-platlibdir=
+#   --without-platlibdir
+if test -n "$withval" -a "$withval" != yes -a "$withval" != no
+then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+$as_echo "yes" >&6; }
+  PLATLIBDIR="$withval"
+  BINLIBDEST='${exec_prefix}/${PLATLIBDIR}/python$(VERSION)'
 else
-  LIBPL='$(prefix)'"/lib/python${VERSION}/config-${LDVERSION}-${PLATFORM_TRIPLET}"
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
+
+
+
+if test x$PLATFORM_TRIPLET = x; then
+  LIBPL='$(prefix)'"/${PLATLIBDIR}/python${VERSION}/config-${LDVERSION}"
+else
+  LIBPL='$(prefix)'"/${PLATLIBDIR}/python${VERSION}/config-${LDVERSION}-${PLATFORM_TRIPLET}"
 fi
 
 
@@ -15286,7 +15565,7 @@ else
 
 int main()
 {
-	exit(((-1)>>3 == -1) ? 0 : 1);
+	return (((-1)>>3 == -1) ? 0 : 1);
 }
 
 _ACEOF
@@ -15756,6 +16035,7 @@ else
 /* end confdefs.h.  */
 
 #include <poll.h>
+#include <unistd.h>
 
 int main()
 {
@@ -16698,7 +16978,7 @@ do
 done
 
 
-SRCDIRS="Parser Objects Objects/mimalloc Python Modules Modules/_io Programs"
+SRCDIRS="Parser Parser/pegen Objects Python Modules Modules/_io Programs"
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for build directories" >&5
 $as_echo_n "checking for build directories... " >&6; }
 for dir in $SRCDIRS; do
@@ -17440,6 +17720,43 @@ $as_echo "#define PY_SSL_DEFAULT_CIPHERS 1" >>confdefs.h
 
 fi
 
+
+# builtin hash modules
+default_hashlib_hashes="md5,sha1,sha256,sha512,sha3,blake2"
+
+$as_echo "#define PY_BUILTIN_HASHLIB_HASHES /**/" >>confdefs.h
+
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for --with-builtin-hashlib-hashes" >&5
+$as_echo_n "checking for --with-builtin-hashlib-hashes... " >&6; }
+
+# Check whether --with-builtin-hashlib-hashes was given.
+if test "${with_builtin_hashlib_hashes+set}" = set; then :
+  withval=$with_builtin_hashlib_hashes;
+case "$withval" in
+    yes)
+        withval=$default_hashlib_hashes
+        ;;
+    no)
+        withval=""
+        ;;
+esac
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $withval" >&5
+$as_echo "$withval" >&6; }
+cat >>confdefs.h <<_ACEOF
+#define PY_BUILTIN_HASHLIB_HASHES "$withval"
+_ACEOF
+
+
+else
+
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $default_hashlib_hashes" >&5
+$as_echo "$default_hashlib_hashes" >&6; };
+cat >>confdefs.h <<_ACEOF
+#define PY_BUILTIN_HASHLIB_HASHES "$default_hashlib_hashes"
+_ACEOF
+
+
+fi
 
 
 # generate output files

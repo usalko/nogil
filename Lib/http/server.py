@@ -689,6 +689,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
                              parts[3], parts[4])
                 new_url = urllib.parse.urlunsplit(new_parts)
                 self.send_header("Location", new_url)
+                self.send_header("Content-Length", "0")
                 self.end_headers()
                 return None
             for index in "index.html", "index.htm":
@@ -1123,12 +1124,7 @@ class CGIHTTPRequestHandler(SimpleHTTPRequestHandler):
         referer = self.headers.get('referer')
         if referer:
             env['HTTP_REFERER'] = referer
-        accept = []
-        for line in self.headers.getallmatchingheaders('accept'):
-            if line[:1] in "\t\n\r ":
-                accept.append(line.strip())
-            else:
-                accept = accept + line[7:].split(',')
+        accept = self.headers.get_all('accept', ())
         env['HTTP_ACCEPT'] = ','.join(accept)
         ua = self.headers.get('user-agent')
         if ua:
@@ -1164,8 +1160,9 @@ class CGIHTTPRequestHandler(SimpleHTTPRequestHandler):
                 while select.select([self.rfile], [], [], 0)[0]:
                     if not self.rfile.read(1):
                         break
-                if sts:
-                    self.log_error("CGI script exit status %#x", sts)
+                exitcode = os.waitstatus_to_exitcode(sts)
+                if exitcode:
+                    self.log_error(f"CGI script exit code {exitcode}")
                 return
             # Child
             try:

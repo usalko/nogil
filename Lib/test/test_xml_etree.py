@@ -24,7 +24,7 @@ import weakref
 from functools import partial
 from itertools import product, islice
 from test import support
-from test.support import TESTFN, findfile, import_fresh_module, gc_collect, swap_attr
+from test.support import TESTFN, findfile, import_fresh_module, gc_collect, swap_attr, swap_item
 
 # pyET is the pure-Python implementation.
 #
@@ -149,12 +149,11 @@ class ElementTestCase:
         cls.modules = {pyET, ET}
 
     def pickleRoundTrip(self, obj, name, dumper, loader, proto):
-        save_m = sys.modules[name]
         try:
-            sys.modules[name] = dumper
-            temp = pickle.dumps(obj, proto)
-            sys.modules[name] = loader
-            result = pickle.loads(temp)
+            with swap_item(sys.modules, name, dumper):
+                temp = pickle.dumps(obj, proto)
+            with swap_item(sys.modules, name, loader):
+                result = pickle.loads(temp)
         except pickle.PicklingError as pe:
             # pyET must be second, because pyET may be (equal to) ET.
             human = dict([(ET, "cET"), (pyET, "pyET")])
@@ -162,8 +161,6 @@ class ElementTestCase:
                                      % (obj,
                                         human.get(dumper, dumper),
                                         human.get(loader, loader))) from pe
-        finally:
-            sys.modules[name] = save_m
         return result
 
     def assertEqualElements(self, alice, bob):
@@ -312,6 +309,9 @@ class ElementTreeTest(unittest.TestCase):
         elem.extend([e])
         self.serialize_check(elem, '<body><tag /><tag2 /></body>')
         elem.remove(e)
+        elem.extend(iter([e]))
+        self.serialize_check(elem, '<body><tag /><tag2 /></body>')
+        elem.remove(e)
 
         element = ET.Element("tag", key="value")
         self.serialize_check(element, '<tag key="value" />') # 1
@@ -430,13 +430,14 @@ class ElementTreeTest(unittest.TestCase):
         self.assertEqual(ET.tostring(elem),
                 b'<test testa="testval" testb="test1" testc="test2">aa</test>')
 
+        # Test preserving white space chars in attributes
         elem = ET.Element('test')
         elem.set('a', '\r')
         elem.set('b', '\r\n')
         elem.set('c', '\t\n\r ')
-        elem.set('d', '\n\n')
+        elem.set('d', '\n\n\r\r\t\t  ')
         self.assertEqual(ET.tostring(elem),
-                b'<test a="&#10;" b="&#10;" c="&#09;&#10;&#10; " d="&#10;&#10;" />')
+                b'<test a="&#13;" b="&#13;&#10;" c="&#09;&#10;&#13; " d="&#10;&#10;&#13;&#13;&#09;&#09;  " />')
 
     def test_makeelement(self):
         # Test makeelement handling.
@@ -2259,6 +2260,10 @@ class BugsTest(unittest.TestCase):
         text = text[6:-4]
         self.assertEqual(root.get('b'), text)
 
+    def test_39495_treebuilder_start(self):
+        self.assertRaises(TypeError, ET.TreeBuilder().start, "tag")
+        self.assertRaises(TypeError, ET.TreeBuilder().start, "tag", None)
+
 
 
 # --------------------------------------------------------------------
@@ -2448,6 +2453,7 @@ class BasicElementTest(ElementTestCase, unittest.TestCase):
         wref = weakref.ref(e, wref_cb)
         self.assertEqual(wref().tag, 'e')
         del e
+        gc_collect()  # For PyPy or other GCs.
         self.assertEqual(flag, True)
         self.assertEqual(wref(), None)
 
@@ -3266,7 +3272,7 @@ class TreeBuilderTest(unittest.TestCase):
         self._check_element_factory_class(MyElement)
 
     def test_element_factory_pure_python_subclass(self):
-        # Mimick SimpleTAL's behaviour (issue #16089): both versions of
+        # Mimic SimpleTAL's behaviour (issue #16089): both versions of
         # TreeBuilder should be able to cope with a subclass of the
         # pure Python Element class.
         base = ET._Element_Py
@@ -3888,6 +3894,14 @@ class C14NTest(unittest.TestCase):
         # fragments from PJ's tests
         #self.assertEqual(c14n_roundtrip("<doc xmlns:x='http://example.com/x' xmlns='http://example.com/default'><b y:a1='1' xmlns='http://example.com/default' a3='3' xmlns:y='http://example.com/y' y:a2='2'/></doc>"),
         #'<doc xmlns:x="http://example.com/x"><b xmlns:y="http://example.com/y" a3="3" y:a1="1" y:a2="2"></b></doc>')
+
+        # Namespace issues
+        xml = '<X xmlns="http://nps/a"><Y targets="abc,xyz"></Y></X>'
+        self.assertEqual(c14n_roundtrip(xml), xml)
+        xml = '<X xmlns="http://nps/a"><Y xmlns="http://nsp/b" targets="abc,xyz"></Y></X>'
+        self.assertEqual(c14n_roundtrip(xml), xml)
+        xml = '<X xmlns="http://nps/a"><Y xmlns:b="http://nsp/b" b:targets="abc,xyz"></Y></X>'
+        self.assertEqual(c14n_roundtrip(xml), xml)
 
     def test_c14n_exclusion(self):
         xml = textwrap.dedent("""\

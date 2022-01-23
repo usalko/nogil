@@ -39,7 +39,7 @@ struct wrapperbase {
 /* Various kinds of descriptor objects */
 
 typedef struct {
-    PyFuncBase   d_base;
+    PyFuncBase func_base;
     PyTypeObject *d_type;
     PyObject *d_name;
     PyObject *d_qualname;

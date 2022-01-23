@@ -58,19 +58,16 @@ llist_remove(struct llist_node *node)
 }
 
 static inline void
-llist_move_all(struct llist_node *dst, struct llist_node *src)
+llist_concat(struct llist_node *head1, struct llist_node *head2)
 {
-    if (llist_empty(src)) {
-        return;
+    if (!llist_empty(head2)) {
+        head1->prev->next = head2->next;
+        head2->next->prev = head1->prev;
+
+        head1->prev = head2->prev;
+        head2->prev->next = head1;
+        llist_init(head2);
     }
-    struct llist_node *first = src->next;
-    struct llist_node *last = src->prev;
-    struct llist_node *tail = dst->prev;
-    tail->next = first;
-    first->prev = tail;
-    dst->prev = last;
-    last->next = dst;
-    llist_init(src);
 }
 
 #ifdef __cplusplus

@@ -1,31 +1,27 @@
 #include "Python.h"
-#include "structmember.h"
-#include "internal/pycore_refcnt.h"
+#include "pycore_object.h"        // _PyObject_GET_WEAKREFS_CONTROLPTR()
+#include "structmember.h"         // PyMemberDef
+#include "pycore_refcnt.h"
 #include "pyatomic.h"
 
 
-#define GET_WEAKREFS_LISTPTR(o) \
-        ((PyWeakReference **) PyObject_GET_WEAKREFS_LISTPTR(o))
+typedef struct _PyWeakrefBase PyWeakrefBase;
 
+extern PyTypeObject _PyWeakref_ControlType;
 
 Py_ssize_t
-_PyWeakref_GetWeakrefCount(PyWeakReference *head)
+_PyWeakref_GetWeakrefCount(PyWeakrefControl *ctrl)
 {
-    if (!head) {
+    if (ctrl == NULL) {
         return 0;
     }
 
-    PyWeakReference *ref;
-    Py_ssize_t count = 1;
-
-    ref = head->wr_prev;
-    while (ref != NULL) {
-        ++count;
-        ref = ref->wr_prev;
-    }
+    PyWeakrefBase *head = &ctrl->base;
+    PyWeakrefBase *ref;
+    Py_ssize_t count = 0;
 
     ref = head->wr_next;
-    while (ref != NULL) {
+    while (ref != head) {
         ++count;
         ref = ref->wr_next;
     }
@@ -34,56 +30,42 @@ _PyWeakref_GetWeakrefCount(PyWeakReference *head)
 }
 
 static PyWeakReference *
-new_weakref(PyTypeObject *type, PyObject *ob, PyObject *callback)
+new_weakref(PyTypeObject *type, PyWeakrefControl *root, PyObject *callback)
 {
     PyWeakReference *self = (PyWeakReference *)type->tp_alloc(type, 0);
     if (!self) {
         return NULL;
     }
-    self->mutex.v = 0;
     self->hash = -1;
-    self->wr_object = ob;
+    Py_INCREF(root);
+    self->wr_parent = root;
     Py_XINCREF(callback);
     self->wr_callback = callback;
     return self;
 }
 
-/* This function clears the passed-in reference and removes it from the
- * list of weak references for the referent.  This is the only code that
- * removes an item from the doubly-linked list of weak references for an
- * object; it is also responsible for clearing the callback slot.
- */
+/* Removes 'ref' from the list of weak references. */
 static void
-clear_weakref(PyWeakReference *self)
+remove_weakref(PyWeakrefBase *ref)
 {
-    if (!self->wr_parent) {
-        assert(!self->wr_prev && !self->wr_next);
-        return;
+    PyWeakrefBase *prev = ref->wr_prev;
+    if (prev != NULL) {
+        PyWeakrefBase *next = ref->wr_next;
+        prev->wr_next = next;
+        next->wr_prev = prev;
     }
-
-    PyWeakReference *root = self->wr_parent;
-    assert(root);
-
-    _PyMutex_lock(&root->mutex);
-
-    if (self->wr_prev != NULL)
-        self->wr_prev->wr_next = self->wr_next;
-    if (self->wr_next != NULL)
-        self->wr_next->wr_prev = self->wr_prev;
-    self->wr_prev = NULL;
-    self->wr_next = NULL;
-
-    _PyMutex_unlock(&root->mutex);
-
-    Py_CLEAR(self->wr_callback);
-    Py_CLEAR(self->wr_parent);
+    ref->wr_prev = ref->wr_next = NULL;
 }
 
-/* Cyclic gc uses this to *just* clear the passed-in reference, leaving
+/* The _PyWeakref_DetachRefFromGC and _PyWeakref_DetachRefFromDealloc
+ * functions clear the passed-in reference and removes it from the
+ * list of weak references for the referent.
+ *
+ * Cyclic gc uses this to *just* detach the passed-in reference, leaving
  * the callback intact and uncalled.  It must be possible to call self's
  * tp_dealloc() after calling this, so self has to be left in a sane enough
  * state for that to work.  We expect tp_dealloc to decref the callback
- * then.  The reason for not letting clear_weakref() decref the callback
+ * then.  The reason for not letting this function decref the callback
  * right now is that if the callback goes away, that may in turn trigger
  * another callback (if a weak reference to the callback exists) -- running
  * arbitrary Python code in the middle of gc is a disaster.  The convolution
@@ -91,17 +73,33 @@ clear_weakref(PyWeakReference *self)
  * a sane state again.
  */
 void
-_PyWeakref_ClearRef(PyWeakReference *self)
+_PyWeakref_DetachRefFromGC(PyWeakReference *ref)
 {
-    self->wr_object = Py_None;
+    PyWeakrefControl *ctrl = ref->wr_parent;
+    if (ctrl == NULL) {
+        return;
+    }
+
+    remove_weakref(&ref->base);
+
+    ref->wr_parent = NULL;
+    Py_DECREF(ctrl);
 }
 
 static void
-weakref_dealloc(PyWeakReference *self)
+_PyWeakref_DetachRefFromDealloc(PyWeakReference *ref)
 {
-    PyObject_GC_UnTrack(self);
-    clear_weakref(self);
-    Py_TYPE(self)->tp_free((PyObject *)self);
+    PyWeakrefControl *ctrl = ref->wr_parent;
+    if (ctrl == NULL) {
+        return;
+    }
+
+    _PyMutex_lock(&ctrl->mutex);
+    remove_weakref(&ref->base);
+    _PyMutex_unlock(&ctrl->mutex);
+
+    ref->wr_parent = NULL;
+    Py_DECREF(ctrl);
 }
 
 
@@ -116,8 +114,17 @@ gc_traverse(PyWeakReference *self, visitproc visit, void *arg)
 static int
 gc_clear(PyWeakReference *self)
 {
-    clear_weakref(self);
+    Py_CLEAR(self->wr_callback);
     return 0;
+}
+
+static void
+weakref_dealloc(PyObject *self)
+{
+    PyObject_GC_UnTrack(self);
+    gc_clear((PyWeakReference *)self);
+    _PyWeakref_DetachRefFromDealloc((PyWeakReference *)self);
+    Py_TYPE(self)->tp_free(self);
 }
 
 
@@ -127,7 +134,7 @@ weakref_call(PyWeakReference *self, PyObject *args, PyObject *kw)
     static char *kwlist[] = {NULL};
 
     if (PyArg_ParseTupleAndKeywords(args, kw, ":__call__", kwlist)) {
-        return PyWeakref_LockObject((PyObject*)self);
+        return PyWeakref_LockObject((PyObject *)self);
     }
     return NULL;
 }
@@ -139,7 +146,7 @@ weakref_hash(PyWeakReference *self)
     if (self->hash != -1)
         return self->hash;
 
-    PyObject *obj = PyWeakref_LockObject((PyObject*)self);
+    PyObject *obj = PyWeakref_LockObject((PyObject *)self);
     if (obj == Py_None) {
         Py_DECREF(obj);
         PyErr_SetString(PyExc_TypeError, "weak object has gone away");
@@ -157,13 +164,12 @@ weakref_repr(PyWeakReference *self)
 {
     PyObject *name, *repr;
     _Py_IDENTIFIER(__name__);
-    PyObject* obj = PyWeakref_GET_OBJECT(self);
+    PyObject* obj = PyWeakref_LockObject((PyObject *)self);
 
     if (obj == Py_None) {
         return PyUnicode_FromFormat("<weakref at %p; dead>", self);
     }
 
-    Py_INCREF(obj);
     if (_PyObject_LookupAttrId(obj, &PyId___name__, &name) < 0) {
         Py_DECREF(obj);
         return NULL;
@@ -172,14 +178,14 @@ weakref_repr(PyWeakReference *self)
         repr = PyUnicode_FromFormat(
             "<weakref at %p; to '%s' at %p>",
             self,
-            Py_TYPE(PyWeakref_GET_OBJECT(self))->tp_name,
+            Py_TYPE(obj)->tp_name,
             obj);
     }
     else {
         repr = PyUnicode_FromFormat(
             "<weakref at %p; to '%s' at %p (%U)>",
             self,
-            Py_TYPE(PyWeakref_GET_OBJECT(self))->tp_name,
+            Py_TYPE(obj)->tp_name,
             obj,
             name);
     }
@@ -200,20 +206,16 @@ weakref_richcompare(PyWeakReference* self, PyWeakReference* other, int op)
         !PyWeakref_Check(other)) {
         Py_RETURN_NOTIMPLEMENTED;
     }
-    if (PyWeakref_GET_OBJECT(self) == Py_None
-        || PyWeakref_GET_OBJECT(other) == Py_None) {
+    PyObject* obj = PyWeakref_LockObject((PyObject *)self);
+    PyObject* other_obj = PyWeakref_LockObject((PyObject *)other);
+    if (obj == Py_None || other_obj == Py_None) {
         int res = (self == other);
         if (op == Py_NE)
             res = !res;
-        if (res)
-            Py_RETURN_TRUE;
-        else
-            Py_RETURN_FALSE;
+        Py_DECREF(obj);
+        Py_DECREF(other_obj);
+        return res ? Py_True : Py_False;
     }
-    PyObject* obj = PyWeakref_GET_OBJECT(self);
-    PyObject* other_obj = PyWeakref_GET_OBJECT(other);
-    Py_INCREF(obj);
-    Py_INCREF(other_obj);
     PyObject* res = PyObject_RichCompare(obj, other_obj, op);
     Py_DECREF(obj);
     Py_DECREF(other_obj);
@@ -222,82 +224,71 @@ weakref_richcompare(PyWeakReference* self, PyWeakReference* other, int op)
 
 /* Insert 'newref' in the list before 'next'.  Both must be non-NULL. */
 static void
-insert_before(PyWeakReference *newref, PyWeakReference *next)
+insert_before(PyWeakrefBase *newref, PyWeakrefBase *next)
 {
     newref->wr_next = next;
     newref->wr_prev = next->wr_prev;
-    if (next->wr_prev != NULL)
-        next->wr_prev->wr_next = newref;
+    next->wr_prev->wr_next = newref;
     next->wr_prev = newref;
 }
 
 /* Insert 'newref' in the list after 'prev'.  Both must be non-NULL. */
 static void
-insert_after(PyWeakReference *newref, PyWeakReference *prev)
+insert_after(PyWeakrefBase *newref, PyWeakrefBase *prev)
 {
     newref->wr_prev = prev;
     newref->wr_next = prev->wr_next;
-    if (prev->wr_next != NULL)
-        prev->wr_next->wr_prev = newref;
+    prev->wr_next->wr_prev = newref;
     prev->wr_next = newref;
 }
 
-static PyWeakReference *
-PyWeakref_Root(PyObject *ob)
+static PyWeakrefControl *
+PyWeakref_Control(PyObject *ob)
 {
-    PyWeakReference **wrptr = GET_WEAKREFS_LISTPTR(ob);
+    PyWeakrefControl **wrptr = _PyObject_GET_WEAKREFS_CONTROLPTR(ob);
 
-    PyWeakReference *root = _Py_atomic_load_ptr(wrptr);
-    if (root) {
-        return root;
+    PyWeakrefControl *ctrl = _Py_atomic_load_ptr(wrptr);
+    if (ctrl != NULL) {
+        return ctrl;
     }
 
-    root = new_weakref(&_PyWeakref_RefType, ob, NULL);
-    if (!root) {
+    ctrl = PyObject_New(PyWeakrefControl, &_PyWeakref_ControlType);
+    if (ctrl == NULL) {
         return NULL;
     }
+    memset(&ctrl->mutex, 0, sizeof(ctrl->mutex));
+    ctrl->wr_object = ob;
 
-    if (!_Py_atomic_compare_exchange_ptr(wrptr, NULL, root)) {
-        /* Another thread already set the root weakref; use it */
-        Py_DECREF(root);
-        root = _Py_atomic_load_ptr(wrptr);
-        assert(root);
+    PyWeakrefBase *base = &ctrl->base;
+    base->wr_prev = base->wr_next = base;
+
+    if (!_Py_atomic_compare_exchange_ptr(wrptr, NULL, ctrl)) {
+        /* Another thread already set the ctrl weakref; use it */
+        Py_DECREF(ctrl);
+        ctrl = _Py_atomic_load_ptr(wrptr);
+        assert(ctrl != NULL);
     }
 
-    return root;
+    return ctrl;
 }
 
 static PyWeakReference *
-PyWeakref_SharedProxy(PyTypeObject *type, PyObject *ob)
+weakref_matching(PyWeakrefControl *ctrl, PyTypeObject *type)
 {
-    PyWeakReference *root;
-
-    root = PyWeakref_Root(ob);
-    if (!root) {
-        return NULL;
+    assert(_PyMutex_is_locked(&ctrl->mutex));
+    PyWeakrefBase *wr = ctrl->base.wr_prev;
+    int i = 0;
+    while (wr != &ctrl->base && i < 2) {
+        PyWeakReference *ref = (PyWeakReference *)wr;
+        if (Py_TYPE(ref) == type && ref->wr_callback == NULL) {
+            if (_Py_TRY_INCREF(ref)) {
+                return ref;
+            }
+        }
+        wr = wr->wr_prev;
+        i++;
     }
-
-    _PyMutex_lock(&root->mutex);
-    PyWeakReference *prev = root->wr_prev;
-    if (prev && _Py_TRY_INCREF(prev)) {
-        _PyMutex_unlock(&root->mutex);
-        return prev;
-    }
-    _PyMutex_unlock(&root->mutex);
-
-    PyWeakReference *self = new_weakref(type, ob, NULL);
-    if (!self) {
-        return NULL;
-    }
-
-    Py_INCREF(root);
-    self->wr_parent = root;
-
-    _PyMutex_lock(&root->mutex);
-    insert_before(self, root);
-    _PyMutex_unlock(&root->mutex);
-
-    return self;
+    return NULL;
 }
 
 static PyObject *
@@ -313,35 +304,42 @@ PyWeakref_NewWithType(PyTypeObject *type, PyObject *ob, PyObject *callback)
     if (callback == Py_None)
         callback = NULL;
 
-    if (callback == NULL) {
+    PyWeakrefControl *root = PyWeakref_Control(ob);
+    if (root == NULL) {
+        return NULL;
+    }
+
+    int can_reuse = (callback == NULL &&
+                     (type == &_PyWeakref_RefType ||
+                      type == &_PyWeakref_ProxyType ||
+                      type == &_PyWeakref_CallableProxyType));
+
+    if (can_reuse) {
         /* We can re-use an existing reference. */
-        if (type == &_PyWeakref_RefType) {
-            PyWeakReference *root = PyWeakref_Root(ob);
-            Py_XINCREF(root);
-            return (PyObject *)root;
-        }
-        else if (type == &_PyWeakref_ProxyType ||
-                 type == &_PyWeakref_CallableProxyType) {
-            return (PyObject *)PyWeakref_SharedProxy(type, ob);
+        PyWeakReference *wr;
+        _PyMutex_lock(&root->mutex);
+        wr = weakref_matching(root, type);
+        _PyMutex_unlock(&root->mutex);
+
+        if (wr != NULL) {
+            return (PyObject *)wr;
         }
     }
 
     /* We have to create a new reference. */
-    PyWeakReference *self = new_weakref(type, ob, callback);
-    if (self != NULL) {
-        PyWeakReference *root = PyWeakref_Root(ob);
-        if (!root) {
-            Py_DECREF(self);
-            return NULL;
-        }
-
-        Py_INCREF(root);
-        self->wr_parent = root;
-
-        _PyMutex_lock(&root->mutex);
-        insert_after(self, root);
-        _PyMutex_unlock(&root->mutex);
+    PyWeakReference *self = new_weakref(type, root, callback);
+    if (self == NULL) {
+        return NULL;
     }
+
+    _PyMutex_lock(&root->mutex);
+    if (can_reuse) {
+        insert_before(&self->base, &root->base);
+    }
+    else {
+        insert_after(&self->base, &root->base);
+    }
+    _PyMutex_unlock(&root->mutex);
     return (PyObject *)self;
 }
 
@@ -378,9 +376,26 @@ weakref___init__(PyObject *self, PyObject *args, PyObject *kwargs)
         return -1;
 }
 
+PyTypeObject
+_PyWeakref_ControlType = {
+    PyVarObject_HEAD_INIT(&PyType_Type, 0)
+    .tp_name = "weakref_control",
+    .tp_dealloc = (destructor)PyObject_Del,
+    .tp_basicsize = sizeof(PyWeakrefControl),
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+    .tp_alloc = PyType_GenericAlloc,
+    .tp_free = PyObject_Del
+};
+
 
 static PyMemberDef weakref_members[] = {
     {"__callback__", T_OBJECT, offsetof(PyWeakReference, wr_callback), READONLY},
+    {NULL} /* Sentinel */
+};
+
+static PyMethodDef weakref_methods[] = {
+    {"__class_getitem__",    (PyCFunction)Py_GenericAlias,
+    METH_O|METH_CLASS,       PyDoc_STR("See PEP 585")},
     {NULL} /* Sentinel */
 };
 
@@ -414,7 +429,7 @@ _PyWeakref_RefType = {
     0,                          /*tp_weaklistoffset*/
     0,                          /*tp_iter*/
     0,                          /*tp_iternext*/
-    0,                          /*tp_methods*/
+    weakref_methods,            /*tp_methods*/
     weakref_members,            /*tp_members*/
     0,                          /*tp_getset*/
     0,                          /*tp_base*/
@@ -429,34 +444,31 @@ _PyWeakref_RefType = {
 };
 
 
-static int
-proxy_checkref(PyWeakReference *proxy)
+static PyObject *
+dead_proxy_error(void)
 {
-    if (PyWeakref_GET_OBJECT(proxy) == Py_None) {
-        PyErr_SetString(PyExc_ReferenceError,
-                        "weakly-referenced object no longer exists");
-        return 0;
-    }
-    return 1;
+    PyErr_SetString(PyExc_ReferenceError,
+                    "weakly-referenced object no longer exists");
+    return NULL;
 }
 
-
-/* If a parameter is a proxy, check that it is still "live" and wrap it,
- * replacing the original value with the raw object.  Raises ReferenceError
- * if the param is a dead proxy.
- */
-#define UNWRAP(o) \
-        if (PyWeakref_CheckProxy(o)) { \
-            if (!proxy_checkref((PyWeakReference *)o)) \
-                return NULL; \
-            o = PyWeakref_GET_OBJECT(o); \
-        }
+#define UNWRAP(o, ...) \
+    do { \
+        if (!PyWeakref_Check(o)) { \
+            Py_INCREF(o); \
+            break; \
+        } \
+        o = PyWeakref_LockObject(o); \
+        if (o == Py_None) { \
+            __VA_ARGS__; \
+            return dead_proxy_error(); \
+        } \
+    } while (0)
 
 #define WRAP_UNARY(method, generic) \
     static PyObject * \
     method(PyObject *proxy) { \
         UNWRAP(proxy); \
-        Py_INCREF(proxy); \
         PyObject* res = generic(proxy); \
         Py_DECREF(proxy); \
         return res; \
@@ -466,9 +478,7 @@ proxy_checkref(PyWeakReference *proxy)
     static PyObject * \
     method(PyObject *x, PyObject *y) { \
         UNWRAP(x); \
-        UNWRAP(y); \
-        Py_INCREF(x); \
-        Py_INCREF(y); \
+        UNWRAP(y, Py_DECREF(x)); \
         PyObject* res = generic(x, y); \
         Py_DECREF(x); \
         Py_DECREF(y); \
@@ -482,12 +492,10 @@ proxy_checkref(PyWeakReference *proxy)
     static PyObject * \
     method(PyObject *proxy, PyObject *v, PyObject *w) { \
         UNWRAP(proxy); \
-        UNWRAP(v); \
-        if (w != NULL) \
-            UNWRAP(w); \
-        Py_INCREF(proxy); \
-        Py_INCREF(v); \
-        Py_XINCREF(w); \
+        UNWRAP(v, Py_DECREF(proxy)); \
+        if (w != NULL) { \
+            UNWRAP(w, Py_DECREF(proxy), Py_DECREF(v)); \
+        } \
         PyObject* res = generic(proxy, v, w); \
         Py_DECREF(proxy); \
         Py_DECREF(v); \
@@ -499,8 +507,9 @@ proxy_checkref(PyWeakReference *proxy)
     static PyObject * \
     method(PyObject *proxy, PyObject *Py_UNUSED(ignored)) { \
             _Py_IDENTIFIER(special); \
-            UNWRAP(proxy); \
-            Py_INCREF(proxy); \
+            assert(PyWeakref_Check(proxy)); \
+            proxy = PyWeakref_LockObject(proxy); \
+            if (proxy == Py_None) return dead_proxy_error(); \
             PyObject* res = _PyObject_CallMethodIdNoArgs(proxy, &PyId_##special); \
             Py_DECREF(proxy); \
             return res; \
@@ -516,21 +525,26 @@ WRAP_TERNARY(proxy_call, PyObject_Call)
 static PyObject *
 proxy_repr(PyWeakReference *proxy)
 {
-    return PyUnicode_FromFormat(
+    PyObject *obj, *repr;
+
+    obj = PyWeakref_LockObject((PyObject *)proxy);
+    repr = PyUnicode_FromFormat(
         "<weakproxy at %p to %s at %p>",
         proxy,
-        Py_TYPE(PyWeakref_GET_OBJECT(proxy))->tp_name,
-        PyWeakref_GET_OBJECT(proxy));
+        Py_TYPE(obj)->tp_name,
+        obj);
+
+    Py_DECREF(obj);
+    return repr;
 }
 
-
 static int
-proxy_setattr(PyWeakReference *proxy, PyObject *name, PyObject *value)
+proxy_setattr(PyObject *proxy, PyObject *name, PyObject *value)
 {
-    if (!proxy_checkref(proxy))
-        return -1;
-    PyObject *obj = PyWeakref_GET_OBJECT(proxy);
-    Py_INCREF(obj);
+    PyObject *obj = PyWeakref_LockObject(proxy);
+    if (obj == Py_None) {
+        return dead_proxy_error(), -1;
+    }
     int res = PyObject_SetAttr(obj, name, value);
     Py_DECREF(obj);
     return res;
@@ -539,9 +553,15 @@ proxy_setattr(PyWeakReference *proxy, PyObject *name, PyObject *value)
 static PyObject *
 proxy_richcompare(PyObject *proxy, PyObject *v, int op)
 {
-    UNWRAP(proxy);
-    UNWRAP(v);
-    return PyObject_RichCompare(proxy, v, op);
+    proxy = PyWeakref_LockObject(proxy);
+    if (proxy == Py_None) {
+        return dead_proxy_error();
+    }
+    UNWRAP(v, Py_DECREF(proxy));
+    PyObject *ret = PyObject_RichCompare(proxy, v, op);
+    Py_DECREF(proxy);
+    Py_DECREF(v);
+    return ret;
 }
 
 /* number slots */
@@ -581,37 +601,26 @@ WRAP_BINARY(proxy_matmul, PyNumber_MatrixMultiply)
 WRAP_BINARY(proxy_imatmul, PyNumber_InPlaceMatrixMultiply)
 
 static int
-proxy_bool(PyWeakReference *proxy)
+proxy_bool(PyObject *proxy)
 {
-    PyObject *o = PyWeakref_GET_OBJECT(proxy);
-    if (!proxy_checkref(proxy)) {
-        return -1;
+    PyObject *obj = PyWeakref_LockObject(proxy);
+    if (obj == Py_None) {
+        return dead_proxy_error(), -1;
     }
-    Py_INCREF(o);
-    int res = PyObject_IsTrue(o);
-    Py_DECREF(o);
+    int res = PyObject_IsTrue(obj);
+    Py_DECREF(obj);
     return res;
-}
-
-static void
-proxy_dealloc(PyWeakReference *self)
-{
-    if (self->wr_callback != NULL)
-        PyObject_GC_UnTrack((PyObject *)self);
-    clear_weakref(self);
-    PyObject_GC_Del(self);
 }
 
 /* sequence slots */
 
 static int
-proxy_contains(PyWeakReference *proxy, PyObject *value)
+proxy_contains(PyObject *proxy, PyObject *value)
 {
-    if (!proxy_checkref(proxy))
-        return -1;
-
-    PyObject *obj = PyWeakref_GET_OBJECT(proxy);
-    Py_INCREF(obj);
+    PyObject *obj = PyWeakref_LockObject(proxy);
+    if (obj == Py_None) {
+        return dead_proxy_error(), -1;
+    }
     int res = PySequence_Contains(obj, value);
     Py_DECREF(obj);
     return res;
@@ -620,13 +629,12 @@ proxy_contains(PyWeakReference *proxy, PyObject *value)
 /* mapping slots */
 
 static Py_ssize_t
-proxy_length(PyWeakReference *proxy)
+proxy_length(PyObject *proxy)
 {
-    if (!proxy_checkref(proxy))
-        return -1;
-
-    PyObject *obj = PyWeakref_GET_OBJECT(proxy);
-    Py_INCREF(obj);
+    PyObject *obj = PyWeakref_LockObject(proxy);
+    if (obj == Py_None) {
+        return dead_proxy_error(), -1;
+    }
     Py_ssize_t res = PyObject_Length(obj);
     Py_DECREF(obj);
     return res;
@@ -635,13 +643,12 @@ proxy_length(PyWeakReference *proxy)
 WRAP_BINARY(proxy_getitem, PyObject_GetItem)
 
 static int
-proxy_setitem(PyWeakReference *proxy, PyObject *key, PyObject *value)
+proxy_setitem(PyObject *proxy, PyObject *key, PyObject *value)
 {
-    if (!proxy_checkref(proxy))
-        return -1;
-
-    PyObject *obj = PyWeakref_GET_OBJECT(proxy);
-    Py_INCREF(obj);
+    PyObject *obj = PyWeakref_LockObject(proxy);
+    if (obj == Py_None) {
+        return dead_proxy_error(), -1;
+    }
     int res;
     if (value == NULL) {
         res = PyObject_DelItem(obj, key);
@@ -655,25 +662,31 @@ proxy_setitem(PyWeakReference *proxy, PyObject *key, PyObject *value)
 /* iterator slots */
 
 static PyObject *
-proxy_iter(PyWeakReference *proxy)
+proxy_iter(PyObject *proxy)
 {
-    if (!proxy_checkref(proxy))
-        return NULL;
-    PyObject *obj = PyWeakref_GET_OBJECT(proxy);
-    Py_INCREF(obj);
+    PyObject *obj = PyWeakref_LockObject(proxy);
+    if (obj == Py_None) {
+        return dead_proxy_error();
+    }
     PyObject* res = PyObject_GetIter(obj);
     Py_DECREF(obj);
     return res;
 }
 
 static PyObject *
-proxy_iternext(PyWeakReference *proxy)
+proxy_iternext(PyObject *proxy)
 {
-    if (!proxy_checkref(proxy))
+    PyObject *obj = PyWeakref_LockObject(proxy);
+    if (obj == Py_None) {
+        return dead_proxy_error();
+    }
+    if (!PyIter_Check(obj)) {
+        PyErr_Format(PyExc_TypeError,
+            "Weakref proxy referenced a non-iterator '%.200s' object",
+            Py_TYPE(obj)->tp_name);
+        Py_DECREF(obj);
         return NULL;
-
-    PyObject *obj = PyWeakref_GET_OBJECT(proxy);
-    Py_INCREF(obj);
+    }
     PyObject* res = PyIter_Next(obj);
     Py_DECREF(obj);
     return res;
@@ -681,10 +694,12 @@ proxy_iternext(PyWeakReference *proxy)
 
 
 WRAP_METHOD(proxy_bytes, __bytes__)
+WRAP_METHOD(proxy_reversed, __reversed__)
 
 
 static PyMethodDef proxy_methods[] = {
         {"__bytes__", proxy_bytes, METH_NOARGS},
+        {"__reversed__", proxy_reversed, METH_NOARGS},
         {NULL, NULL}
 };
 
@@ -753,7 +768,7 @@ _PyWeakref_ProxyType = {
     sizeof(PyWeakReference),
     0,
     /* methods */
-    (destructor)proxy_dealloc,          /* tp_dealloc */
+    (destructor)weakref_dealloc,        /* tp_dealloc */
     0,                                  /* tp_vectorcall_offset */
     0,                                  /* tp_getattr */
     0,                                  /* tp_setattr */
@@ -762,6 +777,7 @@ _PyWeakref_ProxyType = {
     &proxy_as_number,                   /* tp_as_number */
     &proxy_as_sequence,                 /* tp_as_sequence */
     &proxy_as_mapping,                  /* tp_as_mapping */
+// Notice that tp_hash is intentionally omitted as proxies are "mutable" (when the reference dies).
     0,                                  /* tp_hash */
     0,                                  /* tp_call */
     proxy_str,                          /* tp_str */
@@ -787,7 +803,7 @@ _PyWeakref_CallableProxyType = {
     sizeof(PyWeakReference),
     0,
     /* methods */
-    (destructor)proxy_dealloc,          /* tp_dealloc */
+    (destructor)weakref_dealloc,        /* tp_dealloc */
     0,                                  /* tp_vectorcall_offset */
     0,                                  /* tp_getattr */
     0,                                  /* tp_setattr */
@@ -853,14 +869,17 @@ PyWeakref_LockObject(PyObject *ref)
     }
 
     PyWeakReference *wr = (PyWeakReference *)ref;
-    PyWeakReference *root = wr->wr_parent ? wr->wr_parent : wr;
+    if (wr->wr_parent == NULL) {
+        return Py_None;
+    }
 
-    _PyMutex_lock(&root->mutex);
-    PyObject *obj = root->wr_object;
+    PyWeakrefControl *ctrl = wr->wr_parent;
+    _PyMutex_lock(&ctrl->mutex);
+    PyObject *obj = ctrl->wr_object;
     if (!_Py_TRY_INCREF(obj)) {
         obj = Py_None;
     }
-    _PyMutex_unlock(&root->mutex);
+    _PyMutex_unlock(&ctrl->mutex);
 
     return obj;
 }
@@ -871,7 +890,7 @@ PyWeakref_LockObject(PyObject *ref)
 static void
 handle_callback(PyWeakReference *ref, PyObject *callback)
 {
-    PyObject *cbresult = _PyObject_CallOneArg(callback, (PyObject *)ref);
+    PyObject *cbresult = PyObject_CallOneArg(callback, (PyObject *)ref);
 
     if (cbresult == NULL)
         PyErr_WriteUnraisable(callback);
@@ -880,21 +899,20 @@ handle_callback(PyWeakReference *ref, PyObject *callback)
 }
 
 static Py_ssize_t
-_PyWeakref_DetachRefs(PyWeakReference *head, PyWeakReference *list[], Py_ssize_t max)
+_PyWeakref_DetachRefs(PyWeakrefControl *ctrl, PyWeakReference *list[], Py_ssize_t max)
 {
     Py_ssize_t count = 0;
 
-    PyWeakReference *current = head->wr_next;
-    while (current != NULL && count < max) {
-        // TODO: race on is referenced????
-        PyWeakReference *next = current->wr_next;
+    PyWeakrefBase *head = &ctrl->base;
+    PyWeakrefBase *current = head->wr_next;
+    while (current != head && count < max) {
+        PyWeakrefBase *next = current->wr_next;
 
         if (_Py_TRY_INCREF(current)) {
-            list[count] = current;
+            list[count] = (PyWeakReference *)current;
             ++count;
         }
 
-        // TODO(sgross): should this be in hte if block above?
         current->wr_next = NULL;
         current->wr_prev = NULL;
 
@@ -902,28 +920,42 @@ _PyWeakref_DetachRefs(PyWeakReference *head, PyWeakReference *list[], Py_ssize_t
     }
 
     head->wr_next = current;
-    if (current) {
-        current->wr_prev = head;
-    }
+    current->wr_prev = head;
 
     return count;
 }
 
+// Clears weakrefs without calling callabacks. Called from subtype_dealloc.
 void
-_PyObject_ClearWeakRefsFromGC(PyObject *object)
+_PyObject_ClearWeakRefsFromDealloc(PyObject *object)
 {
-    PyWeakReference **wrptr = GET_WEAKREFS_LISTPTR(object);
-
-    PyWeakReference *root = *wrptr;
-    if (!root)
+    PyWeakrefControl **wrptr = _PyObject_GET_WEAKREFS_CONTROLPTR(object);
+    PyWeakrefControl *root = *wrptr;
+    if (!root) {
         return;
+    }
 
     *wrptr = NULL;
-
     _PyMutex_lock(&root->mutex);
     root->wr_object = Py_None;
     _PyMutex_unlock(&root->mutex);
+    Py_DECREF(root);
+}
 
+// Clears weakrefs without calling callabacks or acquiring locks. Called
+// during stop-the-world garbage collection.
+void
+_PyObject_ClearWeakRefsFromGC(PyObject *object)
+{
+    PyWeakrefControl **wrptr = _PyObject_GET_WEAKREFS_CONTROLPTR(object);
+    PyWeakrefControl *root = *wrptr;
+    if (!root) {
+        return;
+    }
+
+    assert(_PyRuntime.stop_the_world && "should only be called during GC");
+    *wrptr = NULL;
+    root->wr_object = Py_None;
     Py_DECREF(root);
 }
 
@@ -948,20 +980,22 @@ PyObject_ClearWeakRefs(PyObject *object)
         return;
     }
 
-    PyWeakReference **wrptr = GET_WEAKREFS_LISTPTR(object);
+    PyWeakrefControl **wrptr = _PyObject_GET_WEAKREFS_CONTROLPTR(object);
 
-    PyWeakReference *root = *wrptr;
+    PyWeakrefControl *root = *wrptr;
     if (!root)
         return;
 
     *wrptr = NULL;
 
     assert(root->wr_object == object);
-    assert(root->wr_parent == NULL);
+
+    int make_callbacks;
 
     _PyMutex_lock(&root->mutex);
+    make_callbacks = (root->wr_object != Py_None);
     root->wr_object = Py_None;
-    int has_refs = root->wr_next != NULL;
+    int has_refs = root->base.wr_next != &root->base;
     _PyMutex_unlock(&root->mutex);
 
     if (!has_refs) {
@@ -976,12 +1010,12 @@ PyObject_ClearWeakRefs(PyObject *object)
     while (has_refs) {
         _PyMutex_lock(&root->mutex);
         Py_ssize_t count = _PyWeakref_DetachRefs(root, list, 16);
-        has_refs = root->wr_next != NULL;
+        has_refs = root->base.wr_next != &root->base;
         _PyMutex_unlock(&root->mutex);
 
         for (Py_ssize_t i = 0; i < count; i++) {
             PyWeakReference *ref = list[i];
-            if (ref->wr_callback && ref->wr_object != Py_None) {
+            if (ref->wr_callback && make_callbacks) {
                 handle_callback(ref, ref->wr_callback);
             }
             Py_CLEAR(ref->wr_callback);

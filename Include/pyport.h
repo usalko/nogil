@@ -521,6 +521,40 @@ extern "C" {
 #define Py_DEPRECATED(VERSION_UNUSED)
 #endif
 
+#if defined(__clang__)
+#define _Py_COMP_DIAG_PUSH _Pragma("clang diagnostic push")
+#define _Py_COMP_DIAG_IGNORE_DEPR_DECLS \
+    _Pragma("clang diagnostic ignored \"-Wdeprecated-declarations\"")
+#define _Py_COMP_DIAG_POP _Pragma("clang diagnostic pop")
+#elif defined(__GNUC__) \
+    && ((__GNUC__ >= 5) || (__GNUC__ == 4) && (__GNUC_MINOR__ >= 6))
+#define _Py_COMP_DIAG_PUSH _Pragma("GCC diagnostic push")
+#define _Py_COMP_DIAG_IGNORE_DEPR_DECLS \
+    _Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"")
+#define _Py_COMP_DIAG_POP _Pragma("GCC diagnostic pop")
+#elif defined(_MSC_VER)
+#define _Py_COMP_DIAG_PUSH __pragma(warning(push))
+#define _Py_COMP_DIAG_IGNORE_DEPR_DECLS __pragma(warning(disable: 4996))
+#define _Py_COMP_DIAG_POP __pragma(warning(pop))
+#else
+#define _Py_COMP_DIAG_PUSH
+#define _Py_COMP_DIAG_IGNORE_DEPR_DECLS
+#define _Py_COMP_DIAG_POP
+#endif
+
+/* _Py_LIKELY and _PY_UNLIKELY
+ * Provides the compiler with branch prediction information.
+ *
+ * Usage:
+ *   if (_PY_UNLIKELY(x == NULL)) { ... }
+ */
+#if defined(__GNUC__)
+#  define _PY_LIKELY(x)       __builtin_expect((x),1)
+#  define _PY_UNLIKELY(x)     __builtin_expect((x),0)
+#else
+#  define _PY_LIKELY(x)       (x)
+#  define _PY_UNLIKELY(x)     (x)
+#endif
 
 /* _Py_HOT_FUNCTION
  * The hot attribute on a function is used to inform the compiler that the
@@ -790,11 +824,11 @@ extern char * _getpty(int *, int, mode_t, int);
  */
 
 #ifdef WORDS_BIGENDIAN
-#define PY_BIG_ENDIAN 1
-#define PY_LITTLE_ENDIAN 0
+#  define PY_BIG_ENDIAN 1
+#  define PY_LITTLE_ENDIAN 0
 #else
-#define PY_BIG_ENDIAN 0
-#define PY_LITTLE_ENDIAN 1
+#  define PY_BIG_ENDIAN 0
+#  define PY_LITTLE_ENDIAN 1
 #endif
 
 #ifdef Py_BUILD_CORE
@@ -851,8 +885,9 @@ extern _invalid_parameter_handler _Py_silent_invalid_parameter_handler;
 #endif
 
 /* Mark a function which cannot return. Example:
+   PyAPI_FUNC(void) _Py_NO_RETURN PyThread_exit_thread(void);
 
-   PyAPI_FUNC(void) _Py_NO_RETURN PyThread_exit_thread(void); */
+   XLC support is intentionally omitted due to bpo-40244 */
 #if defined(__clang__) || \
     (defined(__GNUC__) && \
      ((__GNUC__ >= 3) || \
@@ -863,5 +898,64 @@ extern _invalid_parameter_handler _Py_silent_invalid_parameter_handler;
 #else
 #  define _Py_NO_RETURN
 #endif
+
+
+// Preprocessor check for a builtin preprocessor function. Always return 0
+// if __has_builtin() macro is not defined.
+//
+// __has_builtin() is available on clang and GCC 10.
+#ifdef __has_builtin
+#  define _Py__has_builtin(x) __has_builtin(x)
+#else
+#  define _Py__has_builtin(x) 0
+#endif
+
+
+/* A convenient way for code to know if sanitizers are enabled. */
+#if defined(__has_feature)
+#  if __has_feature(memory_sanitizer)
+#    if !defined(_Py_MEMORY_SANITIZER)
+#      define _Py_MEMORY_SANITIZER
+#    endif
+#  endif
+#  if __has_feature(address_sanitizer)
+#    if !defined(_Py_ADDRESS_SANITIZER)
+#      define _Py_ADDRESS_SANITIZER
+#    endif
+#  endif
+#  if __has_feature(thread_sanitizer)
+#    if !defined(_Py_THREAD_SANITIZER)
+#      define _Py_THREAD_SANITIZER
+#    endif
+#  endif
+#elif defined(__GNUC__)
+#  if defined(__SANITIZE_ADDRESS__)
+#    define _Py_ADDRESS_SANITIZER
+#  endif
+#  if defined(__SANITIZE_THREAD__)
+#    define _Py_THREAD_SANITIZER
+#  endif
+#endif
+
+#if defined(_Py_MEMORY_SANITIZER)
+#  define _Py_NO_SANITIZE_MEMORY __attribute__((no_sanitize_memory))
+#else
+#  define _Py_NO_SANITIZE_MEMORY
+#endif
+
+#if defined(_Py_ADDRESS_SANITIZER)
+#  define _Py_NO_SANITIZE_ADDRESS __attribute__((no_sanitize("address")))
+#else
+#  define _Py_NO_SANITIZE_ADDRESS
+#endif
+
+// TSAN is supported since GCC 5.1, but __SANITIZE_THREAD__ macro is provided
+// only since GCC 7.
+#if defined(_Py_THREAD_SANITIZER) || (__GNUC__ > 5 || (__GNUC__ == 5 && __GNUC_MINOR__ >= 1))
+#  define _Py_NO_SANITIZE_THREAD __attribute__((no_sanitize_thread))
+#else
+#  define _Py_NO_SANITIZE_THREAD
+#endif
+
 
 #endif /* Py_PYPORT_H */

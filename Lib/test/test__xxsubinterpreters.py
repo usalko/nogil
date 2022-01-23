@@ -19,12 +19,6 @@ interpreters = support.import_module('_xxsubinterpreters')
 ##################################
 # helpers
 
-def powerset(*sets):
-    return itertools.chain.from_iterable(
-        combinations(sets, r)
-        for r in range(len(sets)+1))
-
-
 def _captured_script(script):
     r, w = os.pipe()
     indented = script.replace('\n', '\n                ')
@@ -44,6 +38,20 @@ def _run_output(interp, request, shared=None):
         return rpipe.read()
 
 
+def _wait_for_interp_to_run(interp, timeout=None):
+    # bpo-37224: Running this test file in multiprocesses will fail randomly.
+    # The failure reason is that the thread can't acquire the cpu to
+    # run subinterpreter eariler than the main thread in multiprocess.
+    if timeout is None:
+        timeout = support.SHORT_TIMEOUT
+    start_time = time.monotonic()
+    deadline = start_time + timeout
+    while not interpreters.is_running(interp):
+        if time.monotonic() > deadline:
+            raise RuntimeError('interp is not running')
+        time.sleep(0.010)
+
+
 @contextlib.contextmanager
 def _running(interp):
     r, w = os.pipe()
@@ -56,6 +64,7 @@ def _running(interp):
 
     t = threading.Thread(target=run)
     t.start()
+    _wait_for_interp_to_run(interp)
 
     yield
 
@@ -88,14 +97,6 @@ def _run_interp(id, source, shared, _mainns={}):
         exec(source, _mainns)
     else:
         interpreters.run_string(id, source, shared)
-
-
-def run_interp_threaded(id, source, **shared):
-    def run():
-        _run(id, source, shared)
-    t = threading.Thread(target=run)
-    t.start()
-    t.join()
 
 
 class Interpreter(namedtuple('Interpreter', 'name id')):
@@ -392,6 +393,9 @@ class ShareableTypeTests(unittest.TestCase):
         self._assert_values(i.to_bytes(2, 'little', signed=True)
                             for i in range(-1, 258))
 
+    def test_strs(self):
+        self._assert_values(['hello world', '你好世界', ''])
+
     def test_int(self):
         self._assert_values(itertools.chain(range(-1, 258),
                                             [sys.maxsize, -sys.maxsize - 1]))
@@ -411,6 +415,7 @@ class ShareableTypeTests(unittest.TestCase):
 ##################################
 # interpreter tests
 
+@unittest.skip("sgross: skip subinterpreter tests")
 class ListAllTests(TestBase):
 
     def test_initial(self):
@@ -434,6 +439,7 @@ class ListAllTests(TestBase):
         self.assertEqual(ids, [main, second])
 
 
+@unittest.skip("sgross: skip subinterpreter tests")
 class GetCurrentTests(TestBase):
 
     def test_main(self):
@@ -458,6 +464,7 @@ class GetCurrentTests(TestBase):
         self.assertNotEqual(cur, main)
 
 
+@unittest.skip("sgross: skip subinterpreter tests")
 class GetMainTests(TestBase):
 
     def test_from_main(self):
@@ -479,13 +486,14 @@ class GetMainTests(TestBase):
         self.assertEqual(main, expected)
 
 
+@unittest.skip("sgross: skip subinterpreter tests")
 class IsRunningTests(TestBase):
 
     def test_main(self):
         main = interpreters.get_main()
         self.assertTrue(interpreters.is_running(main))
 
-    @unittest.skip('samisdumb: this tests swaps in a PyThreadState from a different thread')
+    @unittest.skip("sgross: this tests swaps in a PyThreadState from a different thread")
     def test_subinterpreter(self):
         interp = interpreters.create()
         self.assertFalse(interpreters.is_running(interp))
@@ -520,6 +528,7 @@ class IsRunningTests(TestBase):
             interpreters.is_running(-1)
 
 
+@unittest.skip("sgross: skip subinterpreter tests")
 class InterpreterIDTests(TestBase):
 
     def test_with_int(self):
@@ -579,6 +588,7 @@ class InterpreterIDTests(TestBase):
         self.assertTrue(id1 != id3)
 
 
+@unittest.skip("sgross: skip subinterpreter tests")
 class CreateTests(TestBase):
 
     def test_in_main(self):
@@ -597,7 +607,7 @@ class CreateTests(TestBase):
 
         self.assertEqual(len(seen), 100)
 
-    @unittest.skip('samisdumb: this tests swaps in a PyThreadState from a different thread')
+    @unittest.skip("sgross: this tests swaps in a PyThreadState from a different thread")
     def test_in_thread(self):
         lock = threading.Lock()
         id = None
@@ -627,7 +637,7 @@ class CreateTests(TestBase):
 
         self.assertEqual(set(interpreters.list_all()), {main, id1, id2})
 
-    @unittest.skip('samisdumb: this tests swaps in a PyThreadState from a different thread')
+    @unittest.skip("sgross: this tests swaps in a PyThreadState from a different thread")
     def test_in_threaded_subinterpreter(self):
         main, = interpreters.list_all()
         id1 = interpreters.create()
@@ -675,6 +685,7 @@ class CreateTests(TestBase):
         self.assertEqual(set(interpreters.list_all()), before | {id, id2})
 
 
+@unittest.skip("sgross: skip subinterpreter tests")
 class DestroyTests(TestBase):
 
     def test_one(self):
@@ -751,7 +762,7 @@ class DestroyTests(TestBase):
 
         self.assertEqual(set(interpreters.list_all()), {main, id1})
 
-    @unittest.skip('samisdumb: this tests swaps in a PyThreadState from a different thread')
+    @unittest.skip("sgross: this tests swaps in a PyThreadState from a different thread")
     def test_from_other_thread(self):
         id = interpreters.create()
         def f():
@@ -761,7 +772,7 @@ class DestroyTests(TestBase):
         t.start()
         t.join()
 
-    @unittest.skip('samisdumb: this tests swaps in a PyThreadState from a different thread')
+    @unittest.skip("sgross: this tests swaps in a PyThreadState from a different thread")
     def test_still_running(self):
         main, = interpreters.list_all()
         interp = interpreters.create()
@@ -775,6 +786,7 @@ class DestroyTests(TestBase):
             self.assertTrue(interpreters.is_running(interp))
 
 
+@unittest.skip("sgross: skip subinterpreter tests")
 class RunStringTests(TestBase):
 
     SCRIPT = dedent("""
@@ -793,12 +805,6 @@ class RunStringTests(TestBase):
             self._fs.close()
         super().tearDown()
 
-    @property
-    def fs(self):
-        if self._fs is None:
-            self._fs = FSFixture(self)
-        return self._fs
-
     def test_success(self):
         script, file = _captured_script('print("it worked!", end="")')
         with file:
@@ -807,7 +813,7 @@ class RunStringTests(TestBase):
 
         self.assertEqual(out, 'it worked!')
 
-    @unittest.skip('samisdumb: this tests swaps in a PyThreadState from a different thread')
+    @unittest.skip("sgross: this tests swaps in a PyThreadState from a different thread")
     def test_in_thread(self):
         script, file = _captured_script('print("it worked!", end="")')
         with file:
@@ -822,6 +828,7 @@ class RunStringTests(TestBase):
         self.assertEqual(out, 'it worked!')
 
     def test_create_thread(self):
+        subinterp = interpreters.create(isolated=False)
         script, file = _captured_script("""
             import threading
             def f():
@@ -832,7 +839,7 @@ class RunStringTests(TestBase):
             t.join()
             """)
         with file:
-            interpreters.run_string(self.id, script)
+            interpreters.run_string(subinterp, script)
             out = file.read()
 
         self.assertEqual(out, 'it worked!')
@@ -859,7 +866,7 @@ class RunStringTests(TestBase):
             content = file.read()
             self.assertEqual(content, expected)
 
-    @unittest.skip('samisdumb: this tests swaps in a PyThreadState from a different thread')
+    @unittest.skip("sgross: this tests swaps in a PyThreadState from a different thread")
     def test_already_running(self):
         with _running(self.id):
             with self.assertRaises(RuntimeError):
@@ -1091,6 +1098,7 @@ class RunStringTests(TestBase):
 ##################################
 # channel tests
 
+@unittest.skip("sgross: skip subinterpreter tests")
 class ChannelIDTests(TestBase):
 
     def test_default_kwargs(self):
@@ -1180,6 +1188,7 @@ class ChannelIDTests(TestBase):
         self.assertTrue(cid1 != cid3)
 
 
+@unittest.skip("sgross: skip subinterpreter tests")
 class ChannelTests(TestBase):
 
     def test_create_cid(self):
@@ -1216,6 +1225,185 @@ class ChannelTests(TestBase):
 
         self.assertEqual(cid2, int(cid1) + 1)
 
+    def test_channel_list_interpreters_none(self):
+        """Test listing interpreters for a channel with no associations."""
+        # Test for channel with no associated interpreters.
+        cid = interpreters.channel_create()
+        send_interps = interpreters.channel_list_interpreters(cid, send=True)
+        recv_interps = interpreters.channel_list_interpreters(cid, send=False)
+        self.assertEqual(send_interps, [])
+        self.assertEqual(recv_interps, [])
+
+    def test_channel_list_interpreters_basic(self):
+        """Test basic listing channel interpreters."""
+        interp0 = interpreters.get_main()
+        cid = interpreters.channel_create()
+        interpreters.channel_send(cid, "send")
+        # Test for a channel that has one end associated to an interpreter.
+        send_interps = interpreters.channel_list_interpreters(cid, send=True)
+        recv_interps = interpreters.channel_list_interpreters(cid, send=False)
+        self.assertEqual(send_interps, [interp0])
+        self.assertEqual(recv_interps, [])
+
+        interp1 = interpreters.create()
+        _run_output(interp1, dedent(f"""
+            import _xxsubinterpreters as _interpreters
+            obj = _interpreters.channel_recv({cid})
+            """))
+        # Test for channel that has both ends associated to an interpreter.
+        send_interps = interpreters.channel_list_interpreters(cid, send=True)
+        recv_interps = interpreters.channel_list_interpreters(cid, send=False)
+        self.assertEqual(send_interps, [interp0])
+        self.assertEqual(recv_interps, [interp1])
+
+    def test_channel_list_interpreters_multiple(self):
+        """Test listing interpreters for a channel with many associations."""
+        interp0 = interpreters.get_main()
+        interp1 = interpreters.create()
+        interp2 = interpreters.create()
+        interp3 = interpreters.create()
+        cid = interpreters.channel_create()
+
+        interpreters.channel_send(cid, "send")
+        _run_output(interp1, dedent(f"""
+            import _xxsubinterpreters as _interpreters
+            _interpreters.channel_send({cid}, "send")
+            """))
+        _run_output(interp2, dedent(f"""
+            import _xxsubinterpreters as _interpreters
+            obj = _interpreters.channel_recv({cid})
+            """))
+        _run_output(interp3, dedent(f"""
+            import _xxsubinterpreters as _interpreters
+            obj = _interpreters.channel_recv({cid})
+            """))
+        send_interps = interpreters.channel_list_interpreters(cid, send=True)
+        recv_interps = interpreters.channel_list_interpreters(cid, send=False)
+        self.assertEqual(set(send_interps), {interp0, interp1})
+        self.assertEqual(set(recv_interps), {interp2, interp3})
+
+    def test_channel_list_interpreters_destroyed(self):
+        """Test listing channel interpreters with a destroyed interpreter."""
+        interp0 = interpreters.get_main()
+        interp1 = interpreters.create()
+        cid = interpreters.channel_create()
+        interpreters.channel_send(cid, "send")
+        _run_output(interp1, dedent(f"""
+            import _xxsubinterpreters as _interpreters
+            obj = _interpreters.channel_recv({cid})
+            """))
+        # Should be one interpreter associated with each end.
+        send_interps = interpreters.channel_list_interpreters(cid, send=True)
+        recv_interps = interpreters.channel_list_interpreters(cid, send=False)
+        self.assertEqual(send_interps, [interp0])
+        self.assertEqual(recv_interps, [interp1])
+
+        interpreters.destroy(interp1)
+        # Destroyed interpreter should not be listed.
+        send_interps = interpreters.channel_list_interpreters(cid, send=True)
+        recv_interps = interpreters.channel_list_interpreters(cid, send=False)
+        self.assertEqual(send_interps, [interp0])
+        self.assertEqual(recv_interps, [])
+
+    def test_channel_list_interpreters_released(self):
+        """Test listing channel interpreters with a released channel."""
+        # Set up one channel with main interpreter on the send end and two
+        # subinterpreters on the receive end.
+        interp0 = interpreters.get_main()
+        interp1 = interpreters.create()
+        interp2 = interpreters.create()
+        cid = interpreters.channel_create()
+        interpreters.channel_send(cid, "data")
+        _run_output(interp1, dedent(f"""
+            import _xxsubinterpreters as _interpreters
+            obj = _interpreters.channel_recv({cid})
+            """))
+        interpreters.channel_send(cid, "data")
+        _run_output(interp2, dedent(f"""
+            import _xxsubinterpreters as _interpreters
+            obj = _interpreters.channel_recv({cid})
+            """))
+        # Check the setup.
+        send_interps = interpreters.channel_list_interpreters(cid, send=True)
+        recv_interps = interpreters.channel_list_interpreters(cid, send=False)
+        self.assertEqual(len(send_interps), 1)
+        self.assertEqual(len(recv_interps), 2)
+
+        # Release the main interpreter from the send end.
+        interpreters.channel_release(cid, send=True)
+        # Send end should have no associated interpreters.
+        send_interps = interpreters.channel_list_interpreters(cid, send=True)
+        recv_interps = interpreters.channel_list_interpreters(cid, send=False)
+        self.assertEqual(len(send_interps), 0)
+        self.assertEqual(len(recv_interps), 2)
+
+        # Release one of the subinterpreters from the receive end.
+        _run_output(interp2, dedent(f"""
+            import _xxsubinterpreters as _interpreters
+            _interpreters.channel_release({cid})
+            """))
+        # Receive end should have the released interpreter removed.
+        send_interps = interpreters.channel_list_interpreters(cid, send=True)
+        recv_interps = interpreters.channel_list_interpreters(cid, send=False)
+        self.assertEqual(len(send_interps), 0)
+        self.assertEqual(recv_interps, [interp1])
+
+    def test_channel_list_interpreters_closed(self):
+        """Test listing channel interpreters with a closed channel."""
+        interp0 = interpreters.get_main()
+        interp1 = interpreters.create()
+        cid = interpreters.channel_create()
+        # Put something in the channel so that it's not empty.
+        interpreters.channel_send(cid, "send")
+
+        # Check initial state.
+        send_interps = interpreters.channel_list_interpreters(cid, send=True)
+        recv_interps = interpreters.channel_list_interpreters(cid, send=False)
+        self.assertEqual(len(send_interps), 1)
+        self.assertEqual(len(recv_interps), 0)
+
+        # Force close the channel.
+        interpreters.channel_close(cid, force=True)
+        # Both ends should raise an error.
+        with self.assertRaises(interpreters.ChannelClosedError):
+            interpreters.channel_list_interpreters(cid, send=True)
+        with self.assertRaises(interpreters.ChannelClosedError):
+            interpreters.channel_list_interpreters(cid, send=False)
+
+    def test_channel_list_interpreters_closed_send_end(self):
+        """Test listing channel interpreters with a channel's send end closed."""
+        interp0 = interpreters.get_main()
+        interp1 = interpreters.create()
+        cid = interpreters.channel_create()
+        # Put something in the channel so that it's not empty.
+        interpreters.channel_send(cid, "send")
+
+        # Check initial state.
+        send_interps = interpreters.channel_list_interpreters(cid, send=True)
+        recv_interps = interpreters.channel_list_interpreters(cid, send=False)
+        self.assertEqual(len(send_interps), 1)
+        self.assertEqual(len(recv_interps), 0)
+
+        # Close the send end of the channel.
+        interpreters.channel_close(cid, send=True)
+        # Send end should raise an error.
+        with self.assertRaises(interpreters.ChannelClosedError):
+            interpreters.channel_list_interpreters(cid, send=True)
+        # Receive end should not be closed (since channel is not empty).
+        recv_interps = interpreters.channel_list_interpreters(cid, send=False)
+        self.assertEqual(len(recv_interps), 0)
+
+        # Close the receive end of the channel from a subinterpreter.
+        _run_output(interp1, dedent(f"""
+            import _xxsubinterpreters as _interpreters
+            _interpreters.channel_close({cid}, force=True)
+            """))
+        # Both ends should raise an error.
+        with self.assertRaises(interpreters.ChannelClosedError):
+            interpreters.channel_list_interpreters(cid, send=True)
+        with self.assertRaises(interpreters.ChannelClosedError):
+            interpreters.channel_list_interpreters(cid, send=False)
+
     ####################
 
     def test_send_recv_main(self):
@@ -1250,6 +1438,7 @@ class ChannelTests(TestBase):
 
         self.assertEqual(obj, b'spam')
 
+    @unittest.skip("sgross: this tests swaps in a PyThreadState from a different thread")
     def test_send_recv_different_threads(self):
         cid = interpreters.channel_create()
 
@@ -1270,7 +1459,7 @@ class ChannelTests(TestBase):
 
         self.assertEqual(obj, b'spam')
 
-    @unittest.skip("samisdumb: sub-interpreter runs on PyThreadState* that was created by a different thread triggering assertion")
+    @unittest.skip("sgross: this tests swaps in a PyThreadState from a different thread")
     def test_send_recv_different_interpreters_and_threads(self):
         cid = interpreters.channel_create()
         id1 = interpreters.create()
@@ -1311,6 +1500,27 @@ class ChannelTests(TestBase):
         cid = interpreters.channel_create()
         with self.assertRaises(interpreters.ChannelEmptyError):
             interpreters.channel_recv(cid)
+
+    def test_recv_default(self):
+        default = object()
+        cid = interpreters.channel_create()
+        obj1 = interpreters.channel_recv(cid, default)
+        interpreters.channel_send(cid, None)
+        interpreters.channel_send(cid, 1)
+        interpreters.channel_send(cid, b'spam')
+        interpreters.channel_send(cid, b'eggs')
+        obj2 = interpreters.channel_recv(cid, default)
+        obj3 = interpreters.channel_recv(cid, default)
+        obj4 = interpreters.channel_recv(cid)
+        obj5 = interpreters.channel_recv(cid, default)
+        obj6 = interpreters.channel_recv(cid, default)
+
+        self.assertIs(obj1, default)
+        self.assertIs(obj2, None)
+        self.assertEqual(obj3, 1)
+        self.assertEqual(obj4, b'spam')
+        self.assertEqual(obj5, b'eggs')
+        self.assertIs(obj6, default)
 
     def test_run_string_arg_unresolved(self):
         cid = interpreters.channel_create()
@@ -1529,7 +1739,25 @@ class ChannelTests(TestBase):
         with self.assertRaises(interpreters.ChannelClosedError):
             interpreters.channel_recv(cid)
 
+    def test_channel_list_interpreters_invalid_channel(self):
+        cid = interpreters.channel_create()
+        # Test for invalid channel ID.
+        with self.assertRaises(interpreters.ChannelNotFoundError):
+            interpreters.channel_list_interpreters(1000, send=True)
 
+        interpreters.channel_close(cid)
+        # Test for a channel that has been closed.
+        with self.assertRaises(interpreters.ChannelClosedError):
+            interpreters.channel_list_interpreters(cid, send=True)
+
+    def test_channel_list_interpreters_invalid_args(self):
+        # Tests for invalid arguments passed to the API.
+        cid = interpreters.channel_create()
+        with self.assertRaises(TypeError):
+            interpreters.channel_list_interpreters(cid)
+
+
+@unittest.skip("sgross: skip subinterpreter tests")
 class ChannelReleaseTests(TestBase):
 
     # XXX Add more test coverage a la the tests for close().

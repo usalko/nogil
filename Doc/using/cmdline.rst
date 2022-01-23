@@ -109,8 +109,8 @@ source.
    Many standard library modules contain code that is invoked on their execution
    as a script.  An example is the :mod:`timeit` module::
 
-       python -mtimeit -s 'setup here' 'benchmarked code here'
-       python -mtimeit -h # for details
+       python -m timeit -s 'setup here' 'benchmarked code here'
+       python -m timeit -h # for details
 
    .. audit-event:: cpython.run_module module-name cmdoption-m
 
@@ -322,7 +322,7 @@ Miscellaneous options
 
    Hash randomization is intended to provide protection against a
    denial-of-service caused by carefully-chosen inputs that exploit the worst
-   case performance of a dict construction, O(n^2) complexity.  See
+   case performance of a dict construction, O(n\ :sup:`2`) complexity.  See
    http://www.ocert.org/advisories/ocert-2011-003.html for details.
 
    :envvar:`PYTHONHASHSEED` allows you to set a fixed value for the hash
@@ -426,6 +426,8 @@ Miscellaneous options
    defines the following possible values:
 
    * ``-X faulthandler`` to enable :mod:`faulthandler`;
+   * ``-X oldparser``: enable the traditional LL(1) parser.  See also
+     :envvar:`PYTHONOLDPARSER` and :pep:`617`.
    * ``-X showrefcount`` to output the total reference count and number of used
      memory blocks when the program finishes or after each statement in the
      interactive interpreter. This only works on debug builds.
@@ -477,6 +479,9 @@ Miscellaneous options
       string encoding and decoding operations.
 
       The ``-X showalloccount`` option has been removed.
+
+   .. deprecated-removed:: 3.9 3.10
+      The ``-X oldparser`` option.
 
 
 Options you shouldn't use
@@ -533,6 +538,14 @@ conflict.
    within a Python program as the variable :data:`sys.path`.
 
 
+.. envvar:: PYTHONPLATLIBDIR
+
+   If this is set to a non-empty string, it overrides the :data:`sys.platlibdir`
+   value.
+
+   .. versionadded:: 3.9
+
+
 .. envvar:: PYTHONSTARTUP
 
    If this is the name of a readable file, the Python commands in that file are
@@ -542,7 +555,7 @@ conflict.
    the interactive session.  You can also change the prompts :data:`sys.ps1` and
    :data:`sys.ps2` and the hook :data:`sys.__interactivehook__` in this file.
 
-   .. audit-event:: cpython.run_startup filename PYTHONSTARTUP
+   .. audit-event:: cpython.run_startup filename envvar-PYTHONSTARTUP
 
       Raises an :ref:`auditing event <auditing>` ``cpython.run_startup`` with
       the filename as the argument when called on startup.
@@ -574,6 +587,15 @@ conflict.
    :option:`-d` multiple times.
 
 
+.. envvar:: PYTHONOLDPARSER
+
+   If this is set to a non-empty string, enable the traditional LL(1) parser.
+
+   See also the :option:`-X` ``oldparser`` option and :pep:`617`.
+
+   .. deprecated-removed:: 3.9 3.10
+
+
 .. envvar:: PYTHONINSPECT
 
    If this is set to a non-empty string it is equivalent to specifying the
@@ -599,7 +621,7 @@ conflict.
 .. envvar:: PYTHONCASEOK
 
    If this is set, Python ignores case in :keyword:`import` statements.  This
-   only works on Windows and OS X.
+   only works on Windows and macOS.
 
 
 .. envvar:: PYTHONDONTWRITEBYTECODE
@@ -682,7 +704,7 @@ conflict.
 
    If this environment variable is set, ``sys.argv[0]`` will be set to its
    value instead of the value got through the C runtime.  Only works on
-   Mac OS X.
+   macOS.
 
 .. envvar:: PYTHONWARNINGS
 

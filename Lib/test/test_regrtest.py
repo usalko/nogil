@@ -5,7 +5,6 @@ Note: test_regrtest cannot be run twice in parallel.
 """
 
 import contextlib
-import faulthandler
 import glob
 import io
 import os.path
@@ -16,6 +15,7 @@ import sys
 import sysconfig
 import tempfile
 import textwrap
+import time
 import unittest
 from test import libregrtest
 from test import support
@@ -414,7 +414,7 @@ class BaseTestCase(unittest.TestCase):
 
     def check_executed_tests(self, output, tests, skipped=(), failed=(),
                              env_changed=(), omitted=(),
-                             rerun=(), no_test_ran=(),
+                             rerun={}, no_test_ran=(),
                              randomize=False, interrupted=False,
                              fail_env_changed=False):
         if isinstance(tests, str):
@@ -427,8 +427,6 @@ class BaseTestCase(unittest.TestCase):
             env_changed = [env_changed]
         if isinstance(omitted, str):
             omitted = [omitted]
-        if isinstance(rerun, str):
-            rerun = [rerun]
         if isinstance(no_test_ran, str):
             no_test_ran = [no_test_ran]
 
@@ -466,12 +464,12 @@ class BaseTestCase(unittest.TestCase):
             self.check_line(output, regex)
 
         if rerun:
-            regex = list_regex('%s re-run test%s', rerun)
+            regex = list_regex('%s re-run test%s', rerun.keys())
             self.check_line(output, regex)
             regex = LOG_PREFIX + r"Re-running failed tests in verbose mode"
             self.check_line(output, regex)
-            for test_name in rerun:
-                regex = LOG_PREFIX + f"Re-running {test_name} in verbose mode"
+            for name, match in rerun.items():
+                regex = LOG_PREFIX + f"Re-running {name} in verbose mode \\(matching: {match}\\)"
                 self.check_line(output, regex)
 
         if no_test_ran:
@@ -549,15 +547,14 @@ class BaseTestCase(unittest.TestCase):
 
 
 class CheckActualTests(BaseTestCase):
-    """
-    Check that regrtest appears to find the expected set of tests.
-    """
-
     def test_finds_expected_number_of_tests(self):
+        """
+        Check that regrtest appears to find the expected set of tests.
+        """
         args = ['-Wd', '-E', '-bb', '-m', 'test.regrtest', '--list-tests']
         output = self.run_python(args)
         rough_number_of_tests_found = len(output.splitlines())
-        actual_testsuite_glob = os.path.join(os.path.dirname(__file__),
+        actual_testsuite_glob = os.path.join(glob.escape(os.path.dirname(__file__)),
                                              'test*.py')
         rough_counted_test_py_files = len(glob.glob(actual_testsuite_glob))
         # We're not trying to duplicate test finding logic in here,
@@ -1081,15 +1078,18 @@ class ArgsTestCase(BaseTestCase):
             import unittest
 
             class Tests(unittest.TestCase):
-                def test_bug(self):
-                    # test always fail
+                def test_succeed(self):
+                    return
+
+                def test_fail_always(self):
+                    # test that always fails
                     self.fail("bug")
         """)
         testname = self.create_test(code=code)
 
         output = self.run_tests("-w", testname, exitcode=2)
         self.check_executed_tests(output, [testname],
-                                  failed=testname, rerun=testname)
+                                  failed=testname, rerun={testname: "test_fail_always"})
 
     def test_rerun_success(self):
         # FAILURE then SUCCESS
@@ -1098,7 +1098,8 @@ class ArgsTestCase(BaseTestCase):
             import unittest
 
             class Tests(unittest.TestCase):
-                failed = False
+                def test_succeed(self):
+                    return
 
                 def test_fail_once(self):
                     if not hasattr(builtins, '_test_failed'):
@@ -1109,7 +1110,7 @@ class ArgsTestCase(BaseTestCase):
 
         output = self.run_tests("-w", testname, exitcode=0)
         self.check_executed_tests(output, [testname],
-                                  rerun=testname)
+                                  rerun={testname: "test_fail_once"})
 
     def test_no_tests_ran(self):
         code = textwrap.dedent("""
@@ -1235,10 +1236,12 @@ class ArgsTestCase(BaseTestCase):
                          re.compile('%s timed out' % testname, re.MULTILINE))
 
     def test_unraisable_exc(self):
-        # --fail-env-changed must catch unraisable exception
+        # --fail-env-changed must catch unraisable exception.
+        # The exceptioin must be displayed even if sys.stderr is redirected.
         code = textwrap.dedent(r"""
             import unittest
             import weakref
+            from test.support import captured_stderr
 
             class MyObject:
                 pass
@@ -1250,9 +1253,11 @@ class ArgsTestCase(BaseTestCase):
                 def test_unraisable_exc(self):
                     obj = MyObject()
                     ref = weakref.ref(obj, weakref_callback)
-                    # call weakref_callback() which logs
-                    # an unraisable exception
-                    obj = None
+                    with captured_stderr() as stderr:
+                        # call weakref_callback() which logs
+                        # an unraisable exception
+                        obj = None
+                    self.assertEqual(stderr.getvalue(), '')
         """)
         testname = self.create_test(code=code)
 
@@ -1261,6 +1266,7 @@ class ArgsTestCase(BaseTestCase):
                                   env_changed=[testname],
                                   fail_env_changed=True)
         self.assertIn("Warning -- Unraisable exception", output)
+        self.assertIn("Exception: weakref callback bug", output)
 
     def test_cleanup(self):
         dirname = os.path.join(self.tmptestdir, "test_python_123")

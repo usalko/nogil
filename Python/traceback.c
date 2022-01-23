@@ -2,15 +2,14 @@
 /* Traceback implementation */
 
 #include "Python.h"
-#include "pycore_pystate.h"
-#include "ceval2_meta.h"
+
+#include "ceval_meta.h"
 #include "pycore_stackwalk.h"
 
 #include "code.h"
-#include "code2.h"
-#include "frameobject.h"
-#include "structmember.h"
-#include "osdefs.h"
+#include "frameobject.h"          // PyFrame_GetBack()
+#include "structmember.h"         // PyMemberDef
+#include "osdefs.h"               // SEP
 #ifdef HAVE_FCNTL_H
 #include <fcntl.h>
 #endif
@@ -151,7 +150,7 @@ static PyMethodDef tb_methods[] = {
 };
 
 static PyMemberDef tb_memberlist[] = {
-    {"tb_frame",        T_OBJECT,       OFF(tb_frame),  READONLY},
+    {"tb_frame",        T_OBJECT,       OFF(tb_frame),  READONLY|READ_RESTRICTED},
     {"tb_lasti",        T_INT,          OFF(tb_lasti),  READONLY},
     {"tb_lineno",       T_INT,          OFF(tb_lineno), READONLY},
     {NULL}      /* Sentinel */
@@ -379,7 +378,7 @@ _Py_DisplaySourceLine(PyObject *f, PyObject *filename, int lineno, int indent)
     int fd;
     int i;
     char *found_encoding;
-    char *encoding;
+    const char *encoding;
     PyObject *io;
     PyObject *binary;
     PyObject *fob = NULL;
@@ -387,7 +386,7 @@ _Py_DisplaySourceLine(PyObject *f, PyObject *filename, int lineno, int indent)
     PyObject *res;
     char buf[MAXPATHLEN+1];
     int kind;
-    void *data;
+    const void *data;
 
     /* open the file */
     if (filename == NULL)
@@ -564,32 +563,28 @@ tb_printinternal(PyTracebackObject *tb, PyObject *f, long limit)
         tb = tb->tb_next;
     }
     while (tb != NULL && err == 0) {
-        PyFrameObject *frame = tb->tb_frame;
-        PyObject *co_filename = frame->f_code ? frame->f_code->co_filename : frame->f_code2->co_filename;
-        PyObject *co_name = frame->f_code ? frame->f_code->co_name : frame->f_code2->co_name;
-
+        PyCodeObject *code = PyFrame_GetCode(tb->tb_frame);
         if (last_file == NULL ||
-            co_filename != last_file ||
+            code->co_filename != last_file ||
             last_line == -1 || tb->tb_lineno != last_line ||
-            last_name == NULL || co_name != last_name) {
+            last_name == NULL || code->co_name != last_name) {
             if (cnt > TB_RECURSIVE_CUTOFF) {
                 err = tb_print_line_repeated(f, cnt);
             }
-            last_file = co_filename;
+            last_file = code->co_filename;
             last_line = tb->tb_lineno;
-            last_name = co_name;
+            last_name = code->co_name;
             cnt = 0;
         }
         cnt++;
         if (err == 0 && cnt <= TB_RECURSIVE_CUTOFF) {
-            err = tb_displayline(f,
-                                 co_filename,
-                                 tb->tb_lineno,
-                                 co_name);
+            err = tb_displayline(f, code->co_filename, tb->tb_lineno,
+                                 code->co_name);
             if (err == 0) {
                 err = PyErr_CheckSignals();
             }
         }
+        Py_DECREF(code);
         tb = tb->tb_next;
     }
     if (err == 0 && cnt > TB_RECURSIVE_CUTOFF) {
@@ -630,7 +625,8 @@ PyTraceBack_Print(PyObject *v, PyObject *f)
     return err;
 }
 
-/* Reverse a string. For example, "abcd" becomes "dcba".
+/* Format an integer in range [0; 0xffffffff] to decimal and write it
+   into the file fd.
 
    This function is signal safe. */
 
@@ -726,6 +722,26 @@ _Py_DumpASCII(int fd, PyObject *text)
         truncated = 0;
     }
 
+    // Is an ASCII string?
+    if (ascii->state.ascii) {
+        assert(kind == PyUnicode_1BYTE_KIND);
+        char *str = data;
+
+        int need_escape = 0;
+        for (i=0; i < size; i++) {
+            ch = str[i];
+            if (!(' ' <= ch && ch <= 126)) {
+                need_escape = 1;
+                break;
+            }
+        }
+        if (!need_escape) {
+            // The string can be written with a single write() syscall
+            _Py_write_noraise(fd, str, size);
+            goto done;
+        }
+    }
+
     for (i=0; i < size; i++) {
         if (kind != PyUnicode_WCHAR_KIND)
             ch = PyUnicode_READ(kind, data, i);
@@ -749,6 +765,8 @@ _Py_DumpASCII(int fd, PyObject *text)
             _Py_DumpHexadecimal(fd, ch, 8);
         }
     }
+
+done:
     if (truncated) {
         PUTS(fd, "...");
     }
@@ -758,12 +776,14 @@ _Py_DumpASCII(int fd, PyObject *text)
 
    This function is signal safe. */
 
-static void
-dump_frame(int fd, PyFunc *func, int lineno)
-{
-    PyCodeObject2 *code;
 
-    code = PyCode2_FromFunc(func);
+
+static void
+dump_frame(int fd, PyFunctionObject *func, int lineno)
+{
+    PyCodeObject *code;
+
+    code = _PyFunction_GET_CODE(func);
     PUTS(fd, "  File ");
     if (code != NULL && code->co_filename != NULL
         && PyUnicode_Check(code->co_filename))
@@ -811,14 +831,14 @@ dump_traceback(int fd, PyThreadState *tstate, int write_header)
     }
 
     struct stack_walk w;
-    vm_stack_walk_init(&w, tstate->active);
+    vm_stack_walk_init(&w, vm_active(tstate));
     while (vm_stack_walk(&w)) {
         if (MAX_FRAME_DEPTH <= depth) {
             PUTS(fd, "  ...\n");
             break;
         }
 
-        PyFunc *func = (PyFunc *)AS_OBJ(w.regs[-1]);
+        PyFunctionObject *func = (PyFunctionObject *)AS_OBJ(w.regs[-1]);
         int lineno = vm_stack_walk_lineno(&w);
         dump_frame(fd, func, lineno);
         depth++;
@@ -829,7 +849,6 @@ done:
         PUTS(fd, "<no Python frame>\n");
     }
 }
-
 /* Dump the traceback of a Python thread into fd. Use write() to write the
    traceback and retry if write() is interrupted by a signal (failed with
    EINTR), but don't call the Python signal handler.

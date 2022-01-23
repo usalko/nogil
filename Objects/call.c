@@ -1,9 +1,9 @@
 #include "Python.h"
 #include "pycore_call.h"
-#include "pycore_ceval.h"   /* _PyEval_EvalFrame() */
+#include "pycore_ceval.h"        // _PyEval_EvalFrame()
 #include "pycore_object.h"
 #include "pycore_pyerrors.h"
-#include "pycore_pystate.h"
+#include "pycore_pystate.h"      // _PyThreadState_GET()
 #include "pycore_tupleobject.h"
 #include "frameobject.h"
 
@@ -46,7 +46,8 @@ _Py_CheckFunctionResultImpl(PyThreadState *tstate, PyObject *callable,
                               "%s returned NULL without setting an error",
                               where);
 #ifdef Py_DEBUG
-            /* Ensure that the bug is caught in debug mode */
+            /* Ensure that the bug is caught in debug mode.
+               Py_FatalError() logs the SystemError exception raised above. */
             Py_FatalError("a function returned NULL without setting an error");
 #endif
             return NULL;
@@ -67,7 +68,8 @@ _Py_CheckFunctionResultImpl(PyThreadState *tstate, PyObject *callable,
                     "%s returned a result with an error set", where);
             }
 #ifdef Py_DEBUG
-            /* Ensure that the bug is caught in debug mode */
+            /* Ensure that the bug is caught in debug mode.
+               Py_FatalError() logs the SystemError exception raised above. */
             Py_FatalError("a function returned a result with an error set");
 #endif
             return NULL;
@@ -95,7 +97,7 @@ _PyObject_FastCallDictTstate(PyThreadState *tstate, PyObject *callable,
 {
     assert(callable != NULL);
 
-    /* _PyObject_FastCallDict() must not be called with an exception set,
+    /* PyObject_VectorcallDict() must not be called with an exception set,
        because it can clear it (directly or indirectly) and so the
        caller loses its exception */
     assert(!_PyErr_Occurred(tstate));
@@ -105,7 +107,7 @@ _PyObject_FastCallDictTstate(PyThreadState *tstate, PyObject *callable,
     assert(nargs == 0 || args != NULL);
     assert(kwargs == NULL || PyDict_Check(kwargs));
 
-    vectorcallfunc func = _PyVectorcall_Function(callable);
+    vectorcallfunc func = PyVectorcall_Function(callable);
     if (func == NULL) {
         /* Use tp_call instead */
         return _PyObject_MakeTpCall(tstate, callable, args, nargs, kwargs);
@@ -133,7 +135,7 @@ _PyObject_FastCallDictTstate(PyThreadState *tstate, PyObject *callable,
 
 
 PyObject *
-_PyObject_FastCallDict(PyObject *callable, PyObject *const *args,
+PyObject_VectorcallDict(PyObject *callable, PyObject *const *args,
                        size_t nargsf, PyObject *kwargs)
 {
     PyThreadState *tstate = _PyThreadState_GET();
@@ -203,9 +205,10 @@ PyObject *
 PyVectorcall_Call(PyObject *callable, PyObject *tuple, PyObject *kwargs)
 {
     PyThreadState *tstate = _PyThreadState_GET();
+    vectorcallfunc func;
 
-    /* get vectorcallfunc as in _PyVectorcall_Function, but without
-     * the _Py_TPFLAGS_HAVE_VECTORCALL check */
+    /* get vectorcallfunc as in PyVectorcall_Function, but without
+     * the Py_TPFLAGS_HAVE_VECTORCALL check */
     Py_ssize_t offset = Py_TYPE(callable)->tp_vectorcall_offset;
     if (offset <= 0) {
         _PyErr_Format(tstate, PyExc_TypeError,
@@ -213,7 +216,7 @@ PyVectorcall_Call(PyObject *callable, PyObject *tuple, PyObject *kwargs)
                       Py_TYPE(callable)->tp_name);
         return NULL;
     }
-    vectorcallfunc func = *(vectorcallfunc *)(((char *)callable) + offset);
+    memcpy(&func, (char *) callable + offset, sizeof(func));
     if (func == NULL) {
         _PyErr_Format(tstate, PyExc_TypeError,
                       "'%.200s' object does not support vectorcall",
@@ -259,7 +262,7 @@ _PyObject_Call(PyThreadState *tstate, PyObject *callable,
     assert(PyTuple_Check(args));
     assert(kwargs == NULL || PyDict_Check(kwargs));
 
-    if (_PyVectorcall_Function(callable) != NULL) {
+    if (PyVectorcall_Function(callable) != NULL) {
         return PyVectorcall_Call(callable, args, kwargs);
     }
     else {
@@ -296,108 +299,6 @@ PyCFunction_Call(PyObject *callable, PyObject *args, PyObject *kwargs)
 {
     PyThreadState *tstate = _PyThreadState_GET();
     return _PyObject_Call(tstate, callable, args, kwargs);
-}
-
-
-/* --- PyFunction call functions ---------------------------------- */
-
-static PyObject* _Py_HOT_FUNCTION
-function_code_fastcall(PyThreadState *tstate, PyCodeObject *co,
-                       PyObject *const *args, Py_ssize_t nargs,
-                       PyObject *globals)
-{
-    assert(tstate != NULL);
-    assert(globals != NULL);
-
-    /* XXX Perhaps we should create a specialized
-       _PyFrame_New_NoTrack() that doesn't take locals, but does
-       take builtins without sanity checking them.
-       */
-    PyFrameObject *f = _PyFrame_New_NoTrack(tstate, co, globals, NULL);
-    if (f == NULL) {
-        return NULL;
-    }
-
-    PyObject **fastlocals = f->f_localsplus;
-
-    for (Py_ssize_t i = 0; i < nargs; i++) {
-        Py_INCREF(*args);
-        fastlocals[i] = *args++;
-    }
-    PyObject *result = _PyEval_EvalFrame(tstate, f, 0);
-
-    if (Py_REFCNT(f) > 1) {
-        _PyObject_GC_TRACK(f);
-        Py_DECREF(f);
-    }
-    else {
-        ++tstate->recursion_depth;
-        Py_DECREF(f);
-        --tstate->recursion_depth;
-    }
-    return result;
-}
-
-
-PyObject *
-_PyFunction_Vectorcall(PyObject *func, PyObject* const* stack,
-                       size_t nargsf, PyObject *kwnames)
-{
-    assert(PyFunction_Check(func));
-    assert(kwnames == NULL || PyTuple_CheckExact(kwnames));
-
-    Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
-    assert(nargs >= 0);
-    Py_ssize_t nkwargs = (kwnames == NULL) ? 0 : PyTuple_GET_SIZE(kwnames);
-    assert((nargs == 0 && nkwargs == 0) || stack != NULL);
-    /* kwnames must only contain strings and all keys must be unique */
-
-    PyThreadState *tstate = _PyThreadState_GET();
-    PyCodeObject *co = (PyCodeObject *)PyFunction_GET_CODE(func);
-    PyObject *globals = PyFunction_GET_GLOBALS(func);
-    PyObject *argdefs = PyFunction_GET_DEFAULTS(func);
-
-    if (co->co_kwonlyargcount == 0 && nkwargs == 0 &&
-        (co->co_flags & ~PyCF_MASK) == (CO_OPTIMIZED | CO_NEWLOCALS | CO_NOFREE))
-    {
-        if (argdefs == NULL && co->co_argcount == nargs) {
-            return function_code_fastcall(tstate, co, stack, nargs, globals);
-        }
-        else if (nargs == 0 && argdefs != NULL
-                 && co->co_argcount == PyTuple_GET_SIZE(argdefs)) {
-            /* function called with no arguments, but all parameters have
-               a default value: use default values as arguments .*/
-            stack = _PyTuple_ITEMS(argdefs);
-            return function_code_fastcall(tstate, co,
-                                          stack, PyTuple_GET_SIZE(argdefs),
-                                          globals);
-        }
-    }
-
-    PyObject *kwdefs = PyFunction_GET_KW_DEFAULTS(func);
-    PyObject *closure = PyFunction_GET_CLOSURE(func);
-    PyObject *name = ((PyFunctionObject *)func) -> func_name;
-    PyObject *qualname = ((PyFunctionObject *)func) -> func_qualname;
-
-    PyObject **d;
-    Py_ssize_t nd;
-    if (argdefs != NULL) {
-        d = _PyTuple_ITEMS(argdefs);
-        nd = PyTuple_GET_SIZE(argdefs);
-        assert(nd <= INT_MAX);
-    }
-    else {
-        d = NULL;
-        nd = 0;
-    }
-    return _PyEval_EvalCode(tstate,
-                (PyObject*)co, globals, (PyObject *)NULL,
-                stack, nargs,
-                nkwargs ? _PyTuple_ITEMS(kwnames) : NULL,
-                stack + nargs,
-                nkwargs, 1,
-                d, (int)nd, kwdefs,
-                closure, name, qualname);
 }
 
 
@@ -796,7 +697,7 @@ object_vacall(PyThreadState *tstate, PyObject *base,
 
 
 PyObject *
-_PyObject_VectorcallMethod(PyObject *name, PyObject *const *args,
+PyObject_VectorcallMethod(PyObject *name, PyObject *const *args,
                            size_t nargsf, PyObject *kwnames)
 {
     assert(name != NULL);

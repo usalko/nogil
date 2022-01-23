@@ -18,7 +18,7 @@ PyAPI_FUNC(PyObject *) _PyInterpreterState_GetMainModule(PyInterpreterState *);
 /* State unique per thread */
 
 /* Py_tracefunc return -1 when raising an exception, or 0 for success. */
-typedef int (*Py_tracefunc)(PyObject *, struct _frame *, int, PyObject *);
+typedef int (*Py_tracefunc)(PyObject *, PyFrameObject *, int, PyObject *);
 
 /* The following values are used for 'what' for tracefunc functions
  *
@@ -48,6 +48,15 @@ typedef struct _err_stackitem {
 
 } _PyErr_StackItem;
 
+struct mi_heap_s;
+typedef struct mi_heap_s mi_heap_t;
+
+// must match MI_NUM_HEAPS in mimalloc.h
+#define Py_NUM_HEAPS 5
+
+// _PyEventRc is defined in lock.h
+typedef struct _PyEventRc _PyEventRc;
+typedef union _Register Register;
 
 struct mi_heap_s;
 typedef struct mi_heap_s mi_heap_t;
@@ -69,24 +78,31 @@ struct qsbr;
 
 // The PyThreadState typedef is in Include/pystate.h.
 struct _ts {
+    Register *regs;
+#ifdef HAVE_COMPUTED_GOTOS
+    const void *opcode_targets[127];
+#endif
+    const uint8_t *pc;
+    Register *stack;
+    Register *maxstack;
+    struct ThreadState *active;
+    uintptr_t eval_breaker;
+    PyObject **cargs;
+
     /* See Python/ceval.c for comments explaining most fields */
 
     struct _ts *prev;
     struct _ts *next;
     PyInterpreterState *interp;
 
-    /* OS-specific state (for locking and parking) */
-    PyThreadStateOS *os;
-    uintptr_t _unused_handoff_elem; // TODO: delete before release, but gonna require recompiling conda binaries
-
-    /* thread status */
+    /* thread status (attached, detached, gc) */
     int32_t status;
-    int use_deferred_rc;
+
+    /* Borrowed reference to the current frame (it can be NULL) */
+    PyFrameObject *frame;
 
     mi_heap_t *heaps[Py_NUM_HEAPS];
 
-    struct _frame *frame;
-    struct ThreadState *active;
     int recursion_depth;
     char overflowed; /* The stack has overflowed. Allow 50 more calls
                         to handle the runtime error. */
@@ -131,21 +147,17 @@ struct _ts {
     PyObject *async_exc; /* Asynchronous exception to raise */
     unsigned long thread_id; /* Thread id where this tstate was created */
 
-    uint64_t fast_thread_id; /* Thread id used for object ownership */
-    PyObject *object_queue;
+    uintptr_t fast_thread_id; /* Thread id used for object ownership */
 
     int trash_delete_nesting;
     PyObject *trash_delete_later;
 
-    _PyEventRC *join_event;
+    uintptr_t critical_section;
+
+    _PyEventRc *done_event; /* Set when thread is about to exit */
     int daemon;
-    int from_threading_module;
 
-    struct qsbr *qsbr;
-
-    /* Version counters
-     */
-    uint64_t pydict_next_version;
+    uint64_t pydict_next_version; /* Dict version counter */
 
     int coroutine_origin_tracking_depth;
 
@@ -155,41 +167,39 @@ struct _ts {
     PyObject *context;
     uint64_t context_ver;
 
-    intptr_t thread_ref_total;
+    Py_ssize_t ref_total;
 
     /* Unique thread state id. */
     uint64_t id;
 
-    struct Waiter *waiter;
-
-    uintptr_t eval_breaker;
-    void *opcode_targets[256];
 #ifdef HAVE_COMPUTED_GOTOS
     void *trace_target;
     void *trace_cfunc_target;
     void **opcode_targets_base;
 #endif
 
-    Py_ssize_t *type_refcnts;
-    Py_ssize_t max_type_refcnts;
+    /* Local refcount for heap type objects */
+    Py_ssize_t *local_refcnts;
+    Py_ssize_t local_refcnts_size;
+
+    struct method_cache_entry method_cache[(1 << MCACHE_SIZE_EXP)];
 
     /* XXX signal handlers should also be here */
-    struct method_cache_entry method_cache[(1 << MCACHE_SIZE_EXP)];
+
 };
 
-/* Get the current interpreter state.
+// Alias for backward compatibility with Python 3.8
+#define _PyInterpreterState_Get PyInterpreterState_Get
 
-   Issue a fatal error if there no current Python thread state or no current
-   interpreter. It cannot return NULL.
-
-   The caller must hold the GIL.*/
-PyAPI_FUNC(PyInterpreterState *) _PyInterpreterState_Get(void);
-
-PyAPI_FUNC(PyThreadState *) _PyThreadState_Prealloc(PyInterpreterState *);
+PyAPI_FUNC(PyThreadState *) _PyThreadState_Prealloc(PyInterpreterState *, _PyEventRc *done_event);
 
 /* Similar to PyThreadState_Get(), but don't issue a fatal error
  * if it is NULL. */
 PyAPI_FUNC(PyThreadState *) _PyThreadState_UncheckedGet(void);
+
+PyAPI_FUNC(PyObject *) _PyThreadState_GetDict(PyThreadState *tstate);
+
+PyAPI_FUNC(Py_ssize_t) _PyThreadState_GetRecursionDepth(PyThreadState *tstate);
 
 /* PyGILState */
 
@@ -205,7 +215,7 @@ PyAPI_FUNC(int) PyGILState_Check(void);
    This function doesn't check for error. Return NULL before _PyGILState_Init()
    is called and after _PyGILState_Fini() is called.
 
-   See also _PyInterpreterState_Get() and _PyInterpreterState_GET_UNSAFE(). */
+   See also _PyInterpreterState_Get() and _PyInterpreterState_GET(). */
 PyAPI_FUNC(PyInterpreterState *) _PyGILState_GetInterpreterStateUnsafe(void);
 
 /* The implementation of sys._current_frames()  Returns a dict mapping
@@ -213,8 +223,6 @@ PyAPI_FUNC(PyInterpreterState *) _PyGILState_GetInterpreterStateUnsafe(void);
 */
 PyAPI_FUNC(PyObject *) _PyThread_CurrentFrames(void);
 
-
-PyAPI_FUNC(void) _Py_explicit_merge_all(void);
 
 /* Routines for advanced debuggers, requested by David Beazley.
    Don't use unless you know what you are doing! */
@@ -226,7 +234,22 @@ PyAPI_FUNC(PyThreadState *) PyThreadState_Next(PyThreadState *);
 PyAPI_FUNC(void) PyThreadState_DeleteCurrent(void);
 PyAPI_FUNC(int) _PyThreadState_IsRunning(PyThreadState *tstate);
 
-typedef struct _frame *(*PyThreadFrameGetter)(PyThreadState *self_);
+/* Frame evaluation API */
+
+typedef PyObject* (*_PyFrameEvalFunction)(PyThreadState *tstate, PyFrameObject *, int);
+
+PyAPI_FUNC(_PyFrameEvalFunction) _PyInterpreterState_GetEvalFrameFunc(
+    PyInterpreterState *interp);
+PyAPI_FUNC(void) _PyInterpreterState_SetEvalFrameFunc(
+    PyInterpreterState *interp,
+    _PyFrameEvalFunction eval_frame);
+
+PyAPI_FUNC(const PyConfig*) _PyInterpreterState_GetConfig(PyInterpreterState *interp);
+
+// Get the configuration of the currrent interpreter.
+// The caller must hold the GIL.
+PyAPI_FUNC(const PyConfig*) _Py_GetConfig(void);
+
 
 /* cross-interpreter data */
 

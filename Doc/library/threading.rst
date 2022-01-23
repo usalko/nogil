@@ -21,6 +21,19 @@ level :mod:`_thread` module.  See also the :mod:`queue` module.
    supported by this module.
 
 
+.. impl-detail::
+
+   In CPython, due to the :term:`Global Interpreter Lock
+   <global interpreter lock>`, only one thread
+   can execute Python code at once (even though certain performance-oriented
+   libraries might overcome this limitation).
+   If you want your application to make better use of the computational
+   resources of multi-core machines, you are advised to use
+   :mod:`multiprocessing` or :class:`concurrent.futures.ProcessPoolExecutor`.
+   However, threading is still an appropriate model if you want to run
+   multiple I/O-bound tasks simultaneously.
+
+
 This module defines the following functions:
 
 
@@ -97,10 +110,11 @@ This module defines the following functions:
 
 .. function:: enumerate()
 
-   Return a list of all :class:`Thread` objects currently alive.  The list
-   includes daemonic threads, dummy thread objects created by
-   :func:`current_thread`, and the main thread.  It excludes terminated threads
-   and threads that have not yet been started.
+   Return a list of all :class:`Thread` objects currently active.  The list
+   includes daemonic threads and dummy thread objects created by
+   :func:`current_thread`.  It excludes terminated threads and threads
+   that have not yet been started.  However, the main thread is always part
+   of the result, even when terminated.
 
 
 .. function:: main_thread()
@@ -280,8 +294,6 @@ since it is impossible to detect the termination of alien threads.
    base class constructor (``Thread.__init__()``) before doing anything else to
    the thread.
 
-   Daemon threads must not be used in subinterpreters.
-
    .. versionchanged:: 3.3
       Added the *daemon* argument.
 
@@ -295,12 +307,6 @@ since it is impossible to detect the termination of alien threads.
 
       This method will raise a :exc:`RuntimeError` if called more than once
       on the same thread object.
-
-      Raise a :exc:`RuntimeError` if the thread is a daemon thread and the
-      method is called from a subinterpreter.
-
-      .. versionchanged:: 3.9
-         In a subinterpreter, spawning a daemon thread now raises an exception.
 
    .. method:: run()
 
@@ -399,18 +405,6 @@ since it is impossible to detect the termination of alien threads.
 
       Old getter/setter API for :attr:`~Thread.daemon`; use it directly as a
       property instead.
-
-
-.. impl-detail::
-
-   In CPython, due to the :term:`Global Interpreter Lock`, only one thread
-   can execute Python code at once (even though certain performance-oriented
-   libraries might overcome this limitation).
-   If you want your application to make better use of the computational
-   resources of multi-core machines, you are advised to use
-   :mod:`multiprocessing` or :class:`concurrent.futures.ProcessPoolExecutor`.
-   However, threading is still an appropriate model if you want to run
-   multiple I/O-bound tasks simultaneously.
 
 
 .. _lock-objects:

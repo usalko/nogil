@@ -5,15 +5,15 @@
 #include "pyatomic.h"
 #include "pycore_llist.h"
 #include "pycore_initconfig.h"
+#include "pycore_pystate.h"
+#include "pycore_runtime.h"
 
-struct qsbr_shared;
-typedef struct qsbr_shared *qsbr_shared_t;
-
+/* Per-thread state */
 struct qsbr {
-    uint64_t        t_seq;
-    qsbr_shared_t   t_shared;
-    struct qsbr     *t_next;
-    PyThreadState   *tstate;
+    uint64_t            t_seq;
+    struct qsbr_shared  *t_shared;
+    struct qsbr         *t_next;
+    PyThreadState       *tstate;
 };
 
 struct qsbr_pad {
@@ -21,21 +21,8 @@ struct qsbr_pad {
     char __padding[64 - sizeof(struct qsbr)];
 };
 
-typedef struct qsbr *qsbr_t;
-
-struct qsbr_shared {
-    /* always odd, incremented by two */
-    uint64_t    s_wr;
-
-    /* Minimum observed read sequence. */
-    uint64_t    s_rd_seq;
-
-    qsbr_t      head;
-    uintptr_t   n_free;
-};
-
 static inline uint64_t
-_Py_qsbr_shared_current(qsbr_shared_t shared)
+_Py_qsbr_shared_current(struct qsbr_shared *shared)
 {
     return _Py_atomic_load_uint64(&shared->s_wr);
 }
@@ -43,37 +30,33 @@ _Py_qsbr_shared_current(qsbr_shared_t shared)
 static inline void
 _Py_qsbr_quiescent_state(PyThreadState *ts)
 {
-    // assert(ts->status == _Py_THREAD_ATTACHED);
-    qsbr_t qsbr = ts->qsbr;
+    struct qsbr *qsbr = ((struct PyThreadStateImpl *)ts)->qsbr;
     uint64_t seq = _Py_qsbr_shared_current(qsbr->t_shared); // need acquire
     _Py_atomic_store_uint64_relaxed(&qsbr->t_seq, seq); // probably release
 }
 
 PyStatus
-_Py_qsbr_init(qsbr_shared_t shared);
+_Py_qsbr_init(struct qsbr_shared *shared);
 
 uint64_t
-_Py_qsbr_advance(qsbr_shared_t shared);
+_Py_qsbr_advance(struct qsbr_shared *shared);
 
 bool
-_Py_qsbr_poll(qsbr_t qsbr, uint64_t goal);
+_Py_qsbr_poll(struct qsbr *qsbr, uint64_t goal);
 
 void
-_Py_qsbr_online(qsbr_t qsbr);
+_Py_qsbr_online(struct qsbr *qsbr);
 
 void
-_Py_qsbr_offline(qsbr_t qsbr);
+_Py_qsbr_offline(struct qsbr *qsbr);
 
-qsbr_t
-_Py_qsbr_register(qsbr_shared_t shared, PyThreadState *tsate);
-
-void
-_Py_qsbr_unregister(qsbr_t qsbr);
+struct qsbr *
+_Py_qsbr_register(struct qsbr_shared *shared, PyThreadState *tsate);
 
 void
-_Py_qsbr_unregister_other(qsbr_t qsbr);
+_Py_qsbr_unregister(struct qsbr *qsbr);
 
 void
-_Py_qsbr_after_fork(qsbr_shared_t shared, qsbr_t qsbr);
+_Py_qsbr_after_fork(struct qsbr_shared *shared, struct qsbr *qsbr);
 
 #endif /* !Py_INTERNAL_QSBR_H */

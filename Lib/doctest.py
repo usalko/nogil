@@ -211,6 +211,13 @@ def _normalize_module(module, depth=2):
     else:
         raise TypeError("Expected a module, string, or None")
 
+def _newline_convert(data):
+    # We have two cases to cover and we need to make sure we do
+    # them in the right order
+    for newline in ('\r\n', '\r'):
+        data = data.replace(newline, '\n')
+    return data
+
 def _load_testfile(filename, package, module_relative, encoding):
     if module_relative:
         package = _normalize_module(package, 3)
@@ -221,7 +228,7 @@ def _load_testfile(filename, package, module_relative, encoding):
                 file_contents = file_contents.decode(encoding)
                 # get_data() opens files as 'rb', so one must do the equivalent
                 # conversion as universal newlines would do.
-                return file_contents.replace(os.linesep, '\n'), filename
+                return _newline_convert(file_contents), filename
     with open(filename, encoding=encoding) as f:
         return f.read(), filename
 
@@ -1015,10 +1022,8 @@ class DocTestFinder:
         if inspect.isclass(obj) and self._recurse:
             for valname, val in obj.__dict__.items():
                 # Special handling for staticmethod/classmethod.
-                if isinstance(val, staticmethod):
-                    val = getattr(obj, valname)
-                if isinstance(val, classmethod):
-                    val = getattr(obj, valname).__func__
+                if isinstance(val, (staticmethod, classmethod)):
+                    val = val.__func__
 
                 # Recurse to methods, properties, and nested classes.
                 if ((inspect.isroutine(val) or inspect.isclass(val) or

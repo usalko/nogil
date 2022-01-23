@@ -25,12 +25,9 @@ typedef struct {
     Py_ssize_t allocated;
 
     _PyMutex mutex;
-
-    char use_mutex;
 } PyListObject;
 
 PyAPI_FUNC(PyObject *) _PyList_Extend(PyListObject *, PyObject *);
-PyAPI_FUNC(int) PyList_ClearFreeList(void);
 PyAPI_FUNC(void) _PyList_DebugMallocStats(FILE *out);
 
 /* Macro, trading safety for speed */

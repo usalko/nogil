@@ -1,9 +1,9 @@
 import unittest
 import unittest.mock
-from test.support import (verbose, refcount_test, run_unittest,
+from test.support import (verbose, refcount_test,
                           cpython_only, start_threads,
                           temp_dir, TESTFN, unlink,
-                          import_module)
+                          import_module, collect_in_thread)
 from test.support.script_helper import assert_python_ok, make_script
 
 import _atomic
@@ -225,16 +225,17 @@ class GCTests(unittest.TestCase):
         exec("def f(): pass\n", d)
         gc.collect()
         del d
-        self.assertEqual(gc.collect(), 2)
+        self.assertEqual(gc.collect(), 3)
 
     @refcount_test
     @unittest.skip('TODO(sgross): frame does not create cycle')
     def test_frame(self):
         def f():
             frame = sys._getframe()
+            locals = frame.f_locals
         gc.collect()
         f()
-        self.assertEqual(gc.collect(), 1)
+        self.assertEqual(gc.collect(), 2)
 
     def test_saveall(self):
         # Verify that cyclic garbage like lists show up in gc.garbage if the
@@ -402,6 +403,22 @@ class GCTests(unittest.TestCase):
         gc.collect()
         self.assertEqual(C.inits.load(), C.dels.load())
 
+    def test_gc_critical_lock(self):
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class Key:
+            value: int
+
+        d = {}
+        for i in range(1000):
+            d[Key(i)] = i
+
+        with collect_in_thread():
+            for _ in range(10):
+                for i in range(1000):
+                    d[Key(i)] = i * 10
+
     def test_boom(self):
         class Boom:
             def __getattr__(self, someattribute):
@@ -561,9 +578,9 @@ class GCTests(unittest.TestCase):
         self.assertTrue(gc.is_tracked(UserInt()))
         self.assertTrue(gc.is_tracked([]))
         self.assertTrue(gc.is_tracked(set()))
-        self.assertFalse(gc.is_tracked(UserClassSlots()))
-        self.assertFalse(gc.is_tracked(UserFloatSlots()))
-        self.assertFalse(gc.is_tracked(UserIntSlots()))
+        self.assertTrue(gc.is_tracked(UserClassSlots()))
+        self.assertTrue(gc.is_tracked(UserFloatSlots()))
+        self.assertTrue(gc.is_tracked(UserIntSlots()))
 
     def test_is_finalized(self):
         # Objects not tracked by the always gc return false
@@ -736,7 +753,7 @@ class GCTests(unittest.TestCase):
 
     def test_get_stats(self):
         stats = gc.get_stats()
-        self.assertEqual(len(stats), 3)
+        self.assertEqual(len(stats), 1)
         for st in stats:
             self.assertIsInstance(st, dict)
             self.assertEqual(set(st),
@@ -751,9 +768,7 @@ class GCTests(unittest.TestCase):
         old = gc.get_stats()
         gc.collect()
         new = gc.get_stats()
-        self.assertEqual(new[0]["collections"], old[0]["collections"])
-        self.assertEqual(new[1]["collections"], old[1]["collections"])
-        self.assertEqual(new[2]["collections"], old[2]["collections"] + 1)
+        self.assertEqual(new[0]["collections"], old[0]["collections"] + 1)
 
     def test_freeze(self):
         # freeze no longer does anything, so count is always zero :(
@@ -1060,10 +1075,10 @@ class GCCallbackTests(unittest.TestCase):
 
     def test_collect_generation(self):
         self.preclean()
-        gc.collect(2)
+        gc.collect(0)
         for v in self.visit:
             info = v[2]
-            self.assertEqual(info["generation"], 2)
+            self.assertEqual(info["generation"], 0)
 
     @cpython_only
     def test_collect_garbage(self):
@@ -1139,7 +1154,7 @@ class GCCallbackTests(unittest.TestCase):
         p.stderr.close()
         # Verify that stderr has a useful error message:
         self.assertRegex(stderr,
-            br'gcmodule\.c:[0-9]+: gc_decref: Assertion "gc_get_refs\(g\) > 0" failed.')
+            br'gcmodule\.c:[0-9]+: .*Assertion "gc_get_refs\(gc\) >= 0" failed.')
         self.assertRegex(stderr,
             br'refcount is too small')
         # "address : 0x7fb5062efc18"
@@ -1219,8 +1234,8 @@ class GCTogglingTests(unittest.TestCase):
         # We want to let gc happen "naturally", to preserve the distinction
         # between generations.
         # TODO(sgross): revisit this. no guaranteed "natural" collection, so trigger
-        # collection of generation 0.
-        gc.collect(0)
+        # a collection manually.
+        gc.collect()
 
         self.assertEqual(len(ouch), 1)  # else the callback wasn't invoked
         for x in ouch:
@@ -1280,8 +1295,8 @@ class GCTogglingTests(unittest.TestCase):
         # We want to let gc happen "naturally", to preserve the distinction
         # between generations.
         # TODO(sgross): revisit this. no guaranteed "natural" collection, so trigger
-        # collection of generation 0.
-        gc.collect(0)
+        # a collection manually.
+        gc.collect()
 
         self.assertEqual(len(ouch), 1)  # else __del__ wasn't invoked
         for x in ouch:
@@ -1289,27 +1304,55 @@ class GCTogglingTests(unittest.TestCase):
             # empty __dict__.
             self.assertEqual(x, None)
 
-def test_main():
+
+class PythonFinalizationTests(unittest.TestCase):
+    def test_ast_fini(self):
+        # bpo-44184: Regression test for subtype_dealloc() when deallocating
+        # an AST instance also destroy its AST type: subtype_dealloc() must
+        # not access the type memory after deallocating the instance, since
+        # the type memory can be freed as well. The test is also related to
+        # _PyAST_Fini() which clears references to AST types.
+        code = textwrap.dedent("""
+            import ast
+            import codecs
+
+            # Small AST tree to keep their AST types alive
+            tree = ast.parse("def f(x, y): return 2*x-y")
+            x = [tree]
+            x.append(x)
+
+            # Put the cycle somewhere to survive until the last GC collection.
+            # Codec search functions are only cleared at the end of
+            # interpreter_clear().
+            def search_func(encoding):
+                return None
+            search_func.a = x
+            codecs.register(search_func)
+        """)
+        assert_python_ok("-c", code)
+
+
+def setUpModule():
+    global enabled, debug
     enabled = gc.isenabled()
     gc.disable()
     assert not gc.isenabled()
     debug = gc.get_debug()
     gc.set_debug(debug & ~gc.DEBUG_LEAK) # this test is supposed to leak
+    gc.collect() # Delete 2nd generation garbage
 
-    try:
-        gc.collect() # Delete 2nd generation garbage
-        run_unittest(GCTests, GCTogglingTests, GCCallbackTests)
-    finally:
-        gc.set_debug(debug)
-        # test gc.enable() even if GC is disabled by default
-        if verbose:
-            print("restoring automatic collection")
-        # make sure to always test gc.enable()
-        gc.enable()
-        assert gc.isenabled()
-        if not enabled:
-            gc.disable()
+
+def tearDownModule():
+    gc.set_debug(debug)
+    # test gc.enable() even if GC is disabled by default
+    if verbose:
+        print("restoring automatic collection")
+    # make sure to always test gc.enable()
+    gc.enable()
+    assert gc.isenabled()
+    if not enabled:
+        gc.disable()
+
 
 if __name__ == "__main__":
     unittest.main()
-    # test_main()

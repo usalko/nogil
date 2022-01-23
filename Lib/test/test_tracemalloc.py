@@ -84,6 +84,25 @@ def traceback_filename(filename):
     return traceback_lineno(filename, 0)
 
 
+class TestTraceback(unittest.TestCase):
+    def test_repr(self):
+        def get_repr(*args) -> str:
+            return repr(tracemalloc.Traceback(*args))
+
+        self.assertEqual(get_repr(()), "<Traceback ()>")
+        self.assertEqual(get_repr((), 0), "<Traceback () total_nframe=0>")
+
+        frames = (("f1", 1), ("f2", 2))
+        exp_repr_frames = (
+            "(<Frame filename='f2' lineno=2>,"
+            " <Frame filename='f1' lineno=1>)"
+        )
+        self.assertEqual(get_repr(frames),
+                         f"<Traceback {exp_repr_frames}>")
+        self.assertEqual(get_repr(frames, 2),
+                         f"<Traceback {exp_repr_frames} total_nframe=2>")
+
+
 class TestTracemallocEnabled(unittest.TestCase):
     def setUp(self):
         if tracemalloc.is_tracing():
@@ -246,6 +265,30 @@ class TestTracemallocEnabled(unittest.TestCase):
         traceback2 = tracemalloc.get_object_traceback(obj)
         self.assertIsNone(traceback2)
 
+    def test_reset_peak(self):
+        # Python allocates some internals objects, so the test must tolerate
+        # a small difference between the expected size and the real usage
+        tracemalloc.clear_traces()
+
+        # Example: allocate a large piece of memory, temporarily
+        large_sum = sum(list(range(100000)))
+        size1, peak1 = tracemalloc.get_traced_memory()
+
+        # reset_peak() resets peak to traced memory: peak2 < peak1
+        tracemalloc.reset_peak()
+        size2, peak2 = tracemalloc.get_traced_memory()
+        self.assertGreaterEqual(peak2, size2)
+        self.assertLess(peak2, peak1)
+
+        # check that peak continue to be updated if new memory is allocated:
+        # peak3 > peak2
+        obj_size = 1024 * 1024
+        obj, obj_traceback = allocate_bytes(obj_size)
+        size3, peak3 = tracemalloc.get_traced_memory()
+        self.assertGreaterEqual(peak3, size3)
+        self.assertGreater(peak3, peak2)
+        self.assertGreaterEqual(peak3 - peak2, obj_size)
+
     def test_is_tracing(self):
         tracemalloc.stop()
         self.assertFalse(tracemalloc.is_tracing())
@@ -314,10 +357,7 @@ class TestTracemallocEnabled(unittest.TestCase):
             finally:
                 os._exit(exitcode)
         else:
-            pid2, status = os.waitpid(pid, 0)
-            self.assertTrue(os.WIFEXITED(status))
-            exitcode = os.WEXITSTATUS(status)
-            self.assertEqual(exitcode, 0)
+            support.wait_process(pid, exitcode=0)
 
 
 class TestSnapshot(unittest.TestCase):
@@ -1041,14 +1081,5 @@ class TestCAPI(unittest.TestCase):
             self.untrack()
 
 
-def test_main():
-    support.run_unittest(
-        TestTracemallocEnabled,
-        TestSnapshot,
-        TestFilters,
-        TestCommandLine,
-        TestCAPI,
-    )
-
 if __name__ == "__main__":
-    test_main()
+    unittest.main()

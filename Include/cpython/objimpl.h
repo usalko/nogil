@@ -6,6 +6,56 @@
 extern "C" {
 #endif
 
+#define _PyObject_SIZE(typeobj) ( (typeobj)->tp_basicsize )
+
+/* _PyObject_VAR_SIZE returns the number of bytes (as size_t) allocated for a
+   vrbl-size object with nitems items, exclusive of gc overhead (if any).  The
+   value is rounded up to the closest multiple of sizeof(void *), in order to
+   ensure that pointer fields at the end of the object are correctly aligned
+   for the platform (this is of special importance for subclasses of, e.g.,
+   str or int, so that pointers can be stored after the embedded data).
+
+   Note that there's no memory wastage in doing this, as malloc has to
+   return (at worst) pointer-aligned memory anyway.
+*/
+#if ((SIZEOF_VOID_P - 1) & SIZEOF_VOID_P) != 0
+#   error "_PyObject_VAR_SIZE requires SIZEOF_VOID_P be a power of 2"
+#endif
+
+#define _PyObject_VAR_SIZE(typeobj, nitems)     \
+    _Py_SIZE_ROUND_UP((typeobj)->tp_basicsize + \
+        (nitems)*(typeobj)->tp_itemsize,        \
+        SIZEOF_VOID_P)
+
+
+/* This example code implements an object constructor with a custom
+   allocator, where PyObject_New is inlined, and shows the important
+   distinction between two steps (at least):
+       1) the actual allocation of the object storage;
+       2) the initialization of the Python specific fields
+      in this storage with PyObject_{Init, InitVar}.
+
+   PyObject *
+   YourObject_New(...)
+   {
+       PyObject *op;
+
+       op = (PyObject *) Your_Allocator(_PyObject_SIZE(YourTypeStruct));
+       if (op == NULL)
+       return PyErr_NoMemory();
+
+       PyObject_Init(op, &YourTypeStruct);
+
+       op->ob_field = value;
+       ...
+       return op;
+   }
+
+   Note that in C++, the use of the new operator usually implies that
+   the 1st step is performed automatically for you, so in a C++ class
+   constructor you would start directly with PyObject_Init/InitVar. */
+
+
 /* Inline functions trading binary compatibility for speed:
    PyObject_INIT() is the fast version of PyObject_Init(), and
    PyObject_INIT_VAR() is the fast version of PyObject_InitVar().
@@ -68,63 +118,16 @@ PyAPI_FUNC(Py_ssize_t) _PyGC_CollectNoFail(void);
 PyAPI_FUNC(Py_ssize_t) _PyGC_CollectIfEnabled(void);
 
 
-/* Test if an object has a GC head */
-#define PyObject_IS_GC(o) \
-    (PyType_IS_GC(Py_TYPE(o)) \
-     && (Py_TYPE(o)->tp_is_gc == NULL || Py_TYPE(o)->tp_is_gc(o)))
+/* Test if an object implements the garbage collector protocol */
+PyAPI_FUNC(int) PyObject_IS_GC(PyObject *obj);
 
-#ifdef __cplusplus
-#define _Py_ALIGN_AS alignas
-#elif defined(_MSC_VER)
-#define _Py_ALIGN_AS(n) __declspec(align(n))
-#else
-#define _Py_ALIGN_AS _Alignas
+
+/* Code built with Py_BUILD_CORE must include pycore_gc.h instead which
+   defines a different _PyGC_FINALIZED() macro. */
+#ifndef Py_BUILD_CORE
+   // Kept for backward compatibility with Python 3.8
+#  define _PyGC_FINALIZED(o) PyObject_GC_IsFinalized(o)
 #endif
-
-/* GC information is stored BEFORE the object structure. */
-typedef struct {
-    // Pointer to previous object in the list.
-    // Lowest two bits are used for flags documented later.
-    _Py_ALIGN_AS(16) uintptr_t _gc_prev;
-
-    // Pointer to next object in the list.
-    // 0 means the object is not tracked
-    uintptr_t _gc_next;
-} PyGC_Head;
-
-#define _Py_AS_GC(o) ((PyGC_Head *)(o)-1)
-#define _Py_FROM_GC(g) ((PyObject *)(((PyGC_Head *)g)+1))
-
-/* See also private _PyObject_GC_IS_TRACKED() macro. */
-// TODO: should this be part of the public C-API and move to object.h?
-PyAPI_FUNC(int) PyObject_GC_IsTracked(void *);
-#define _PyObject_GC_IS_TRACKED(o) PyObject_GC_IsTracked(o)
-
-/* Bit flags for _gc_prev */
-/* Bit 0 is set when tp_finalize is called */
-// #define _PyGC_PREV_MASK_FINALIZED  (1)
-/* Bit 1 is set when the object is in generation which is GCed currently. */
-// #define _PyGC_PREV_MASK_COLLECTING (2)
-/* The (N-2) most significant bits contain the real address. */
-#define _PyGC_PREV_SHIFT           (4)
-#define _PyGC_PREV_MASK            (((uintptr_t) -1) << _PyGC_PREV_SHIFT)
-
-// Lowest bit of _gc_next is used for flags only in GC.
-// But it is always 0 for normal code.
-#define _PyGCHead_NEXT(g)        ((PyGC_Head*)(g)->_gc_next)
-#define _PyGCHead_SET_NEXT(g, p) ((g)->_gc_next = (uintptr_t)(p))
-
-// Lowest two bits of _gc_prev is used for _PyGC_PREV_MASK_* flags.
-#define _PyGCHead_PREV(g) ((PyGC_Head*)((g)->_gc_prev & _PyGC_PREV_MASK))
-#define _PyGCHead_SET_PREV(g, p) do { \
-    assert(((uintptr_t)p & ~_PyGC_PREV_MASK) == 0); \
-    (g)->_gc_prev = ((g)->_gc_prev & ~_PyGC_PREV_MASK) \
-        | ((uintptr_t)(p)); \
-    } while (0)
-
-
-// Used by Cython
-#define _PyGC_FINALIZED(o) _PyObject_IsFinalized(o)
 
 PyAPI_FUNC(int) _PyObject_IsFinalized(PyObject *op);
 PyAPI_FUNC(PyObject *) _PyObject_GC_Malloc(size_t size);
@@ -134,8 +137,7 @@ PyAPI_FUNC(PyObject *) _PyObject_GC_Calloc(size_t size);
 /* Test if a type supports weak references */
 #define PyType_SUPPORTS_WEAKREFS(t) ((t)->tp_weaklistoffset > 0)
 
-#define PyObject_GET_WEAKREFS_LISTPTR(o) \
-    ((PyObject **) (((char *) (o)) + Py_TYPE(o)->tp_weaklistoffset))
+PyAPI_FUNC(PyObject **) PyObject_GET_WEAKREFS_LISTPTR(PyObject *op);
 
 #ifdef __cplusplus
 }

@@ -923,7 +923,7 @@ convertsimple(PyObject *arg, const char **p_format, va_list *p_va, int flags,
     case 'C': {/* unicode char */
         int *p = va_arg(*p_va, int *);
         int kind;
-        void *data;
+        const void *data;
 
         if (!PyUnicode_Check(arg))
             return converterr("a unicode character", arg, msgbuf, bufsize);
@@ -1070,6 +1070,9 @@ convertsimple(PyObject *arg, const char **p_format, va_list *p_va, int flags,
     case 'u': /* raw unicode buffer (Py_UNICODE *) */
     case 'Z': /* raw unicode buffer or None */
     {
+        // TODO: Raise DeprecationWarning
+_Py_COMP_DIAG_PUSH
+_Py_COMP_DIAG_IGNORE_DEPR_DECLS
         Py_UNICODE **p = va_arg(*p_va, Py_UNICODE **);
 
         if (*format == '#') {
@@ -1109,6 +1112,7 @@ convertsimple(PyObject *arg, const char **p_format, va_list *p_va, int flags,
                                   arg, msgbuf, bufsize);
         }
         break;
+_Py_COMP_DIAG_POP
     }
 
     case 'e': {/* encoded string */
@@ -2045,6 +2049,7 @@ parser_init(struct _PyArg_Parser *parser)
     if (!_PyBeginOnce(&parser->once)) {
         // some other thread initialized parser
         assert(parser->kwtuple != NULL);
+        Py_DECREF(kwtuple);
         return 1;
     }
 
@@ -2813,6 +2818,7 @@ _PyArg_UnpackStack(PyObject *const *args, Py_ssize_t nargs, const char *name,
 
 
 #undef _PyArg_NoKeywords
+#undef _PyArg_NoKwnames
 #undef _PyArg_NoPositional
 
 /* For type constructors that don't take keyword args
@@ -2839,7 +2845,6 @@ _PyArg_NoKeywords(const char *funcname, PyObject *kwargs)
     return 0;
 }
 
-
 int
 _PyArg_NoPositional(const char *funcname, PyObject *args)
 {
@@ -2854,6 +2859,23 @@ _PyArg_NoPositional(const char *funcname, PyObject *args)
 
     PyErr_Format(PyExc_TypeError, "%.200s() takes no positional arguments",
                     funcname);
+    return 0;
+}
+
+int
+_PyArg_NoKwnames(const char *funcname, PyObject *kwnames)
+{
+    if (kwnames == NULL) {
+        return 1;
+    }
+
+    assert(PyTuple_CheckExact(kwnames));
+
+    if (PyTuple_GET_SIZE(kwnames) == 0) {
+        return 1;
+    }
+
+    PyErr_Format(PyExc_TypeError, "%s() takes no keyword arguments", funcname);
     return 0;
 }
 

@@ -1,10 +1,10 @@
 /*
- * Implementation of quiescent state based reclamation.
+ * Implementation of safe memory reclamation scheme using
+ * quiescent states.
  *
- * This is based on the "GUS" safe memory reclamation technique
- * in FreeBSD written by Jeffrey Roberson.
- *
- * TODO: explain goals, implementation, and design choices.
+ * This is dervied from the "GUS" safe memory reclamation technique
+ * in FreeBSD written by Jeffrey Roberson. The original copyright
+ * is preserved below.
  *
  * Copyright (c) 2019,2020 Jeffrey Roberson <jeff@FreeBSD.org>
  *
@@ -31,14 +31,13 @@
  */
 
 #include "Python.h"
+#include "pycore_atomic.h"
 #include "pycore_qsbr.h"
 #include "pycore_pystate.h"
 #include "pyatomic.h"
 #include "lock.h"
 
 #include <stdint.h>
-
-#define INITIAL_NUM_THREADS 8
 
 #define QSBR_LT(a, b) ((int64_t)((a)-(b)) < 0)
 #define QSBR_LEQ(a, b) ((int64_t)((a)-(b)) <= 0)
@@ -49,10 +48,12 @@ enum {
     QSBR_INCR = 2,
 };
 
-static qsbr_t
-_Py_qsbr_alloc(qsbr_shared_t shared)
+static struct qsbr *
+_Py_qsbr_alloc(struct qsbr_shared *shared)
 {
-    qsbr_t qsbr = (qsbr_t)PyMem_RawMalloc(sizeof(struct qsbr_pad));
+    struct qsbr *qsbr;
+
+    qsbr = (struct qsbr *)PyMem_RawMalloc(sizeof(struct qsbr_pad));
     if (qsbr == NULL) {
         return NULL;
     }
@@ -62,10 +63,10 @@ _Py_qsbr_alloc(qsbr_shared_t shared)
 }
 
 PyStatus
-_Py_qsbr_init(qsbr_shared_t shared)
+_Py_qsbr_init(struct qsbr_shared *shared)
 {
     memset(shared, 0, sizeof(*shared));
-    qsbr_t head = _Py_qsbr_alloc(shared);
+    struct qsbr *head = _Py_qsbr_alloc(shared);
     if (head == NULL) {
         return _PyStatus_NO_MEMORY();
     }
@@ -77,26 +78,26 @@ _Py_qsbr_init(qsbr_shared_t shared)
 }
 
 void
-_Py_qsbr_after_fork(qsbr_shared_t shared, qsbr_t this_qsbr)
+_Py_qsbr_after_fork(struct qsbr_shared *shared, struct qsbr *this_qsbr)
 {
     struct qsbr *qsbr = _Py_atomic_load_ptr(&shared->head);
     while (qsbr != NULL) {
         if (qsbr != this_qsbr) {
-            _Py_qsbr_unregister_other(qsbr);
+            _Py_qsbr_unregister(qsbr);
         }
         qsbr = qsbr->t_next;
     }
 }
 
 uint64_t
-_Py_qsbr_advance(qsbr_shared_t shared)
+_Py_qsbr_advance(struct qsbr_shared *shared)
 {
     // TODO(sgross): handle potential wrap around
     return _Py_atomic_add_uint64(&shared->s_wr, QSBR_INCR) + QSBR_INCR;
 }
 
 uint64_t
-_Py_qsbr_poll_scan(qsbr_shared_t shared)
+_Py_qsbr_poll_scan(struct qsbr_shared *shared)
 {
     uint64_t min_seq = _Py_atomic_load_uint64(&shared->s_wr);
     struct qsbr *qsbr = _Py_atomic_load_ptr(&shared->head);
@@ -117,7 +118,7 @@ _Py_qsbr_poll_scan(qsbr_shared_t shared)
 }
 
 bool
-_Py_qsbr_poll(qsbr_t qsbr, uint64_t goal)
+_Py_qsbr_poll(struct qsbr *qsbr, uint64_t goal)
 {
     uint64_t rd_seq = _Py_atomic_load_uint64(&qsbr->t_shared->s_rd_seq);
     if (QSBR_LEQ(goal, rd_seq)) {
@@ -129,7 +130,7 @@ _Py_qsbr_poll(qsbr_t qsbr, uint64_t goal)
 }
 
 void
-_Py_qsbr_online(qsbr_t qsbr)
+_Py_qsbr_online(struct qsbr *qsbr)
 {
     assert(qsbr->t_seq == 0 && "thread is already online");
 
@@ -137,26 +138,26 @@ _Py_qsbr_online(qsbr_t qsbr)
     _Py_atomic_store_uint64_relaxed(&qsbr->t_seq, seq);
 
     /* ensure update to local counter is visible */
-    _Py_atomic_thread_fence(_Py_memory_order_seq_cst);
+    _Py_atomic_fence_seq_cst();
 }
 
 void
-_Py_qsbr_offline(qsbr_t qsbr)
+_Py_qsbr_offline(struct qsbr *qsbr)
 {
     assert(qsbr->t_seq != 0 && "thread is already offline");
 
     /* maybe just release fence... investigate */
-    _Py_atomic_thread_fence(_Py_memory_order_release);
+    _Py_atomic_fence_release();
     _Py_atomic_store_uint64_relaxed(&qsbr->t_seq, QSBR_OFFLINE);
 }
 
-static qsbr_t
-_Py_qsbr_recycle(qsbr_shared_t shared, PyThreadState *tstate)
+static struct qsbr *
+_Py_qsbr_recycle(struct qsbr_shared *shared, PyThreadState *tstate)
 {
     if (_Py_atomic_load_uintptr(&shared->n_free) == 0) {
         return NULL;
     }
-    qsbr_t qsbr = _Py_atomic_load_ptr(&shared->head);
+    struct qsbr *qsbr = _Py_atomic_load_ptr(&shared->head);
     while (qsbr != NULL) {
         if (_Py_atomic_load_ptr_relaxed(&qsbr->tstate) == NULL &&
             _Py_atomic_compare_exchange_ptr(&qsbr->tstate, NULL, tstate)) {
@@ -169,11 +170,11 @@ _Py_qsbr_recycle(qsbr_shared_t shared, PyThreadState *tstate)
     return NULL;
 }
 
-qsbr_t
-_Py_qsbr_register(qsbr_shared_t shared, PyThreadState *tstate)
+struct qsbr *
+_Py_qsbr_register(struct qsbr_shared *shared, PyThreadState *tstate)
 {
     // First try to re-use a qsbr state
-    qsbr_t qsbr = _Py_qsbr_recycle(shared, tstate);
+    struct qsbr *qsbr = _Py_qsbr_recycle(shared, tstate);
     if (qsbr) {
         return qsbr;
     }
@@ -184,7 +185,7 @@ _Py_qsbr_register(qsbr_shared_t shared, PyThreadState *tstate)
     }
 
     qsbr->tstate = tstate;
-    qsbr_t next;
+    struct qsbr *next;
     do {
         next = _Py_atomic_load_ptr(&shared->head);
         qsbr->t_next = next;
@@ -193,22 +194,10 @@ _Py_qsbr_register(qsbr_shared_t shared, PyThreadState *tstate)
 }
 
 void
-_Py_qsbr_unregister(qsbr_t qsbr)
+_Py_qsbr_unregister(struct qsbr *qsbr)
 {
     assert(qsbr->t_seq == 0 && "qsbr thread-state must be offline");
-    assert(qsbr->tstate->status == _Py_THREAD_ATTACHED);
 
     _Py_atomic_store_ptr_relaxed(&qsbr->tstate, NULL);
     _Py_atomic_add_uintptr(&qsbr->t_shared->n_free, 1);
 }
-
-void
-_Py_qsbr_unregister_other(qsbr_t qsbr)
-{
-    /* This is the same as _Py_qsbr_unregister but without the assertion
-     * that ts->ctr == 0. We should merge the two and figure out the thread
-     * exit mechanism re. zapthreads and daemon threads. */
-    _Py_atomic_store_ptr_relaxed(&qsbr->tstate, NULL);
-    _Py_atomic_add_uintptr(&qsbr->t_shared->n_free, 1);
-}
-

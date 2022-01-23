@@ -3,6 +3,7 @@ import types
 import unittest
 
 from test.support import import_module
+from test.support import gc_collect
 asyncio = import_module("asyncio")
 
 
@@ -659,6 +660,7 @@ class AsyncGenAsyncioTest(unittest.TestCase):
             await g.__anext__()
             await g.__anext__()
             del g
+            gc_collect()  # For PyPy or other GCs.
 
             await asyncio.sleep(0.1)
 
@@ -1075,6 +1077,84 @@ class AsyncGenAsyncioTest(unittest.TestCase):
 
         self.assertEqual(finalized, 2)
 
+    def test_async_gen_asyncio_shutdown_02(self):
+        messages = []
+
+        def exception_handler(loop, context):
+            messages.append(context)
+
+        async def async_iterate():
+            yield 1
+            yield 2
+
+        it = async_iterate()
+        async def main():
+            loop = asyncio.get_running_loop()
+            loop.set_exception_handler(exception_handler)
+
+            async for i in it:
+                break
+
+        asyncio.run(main())
+
+        self.assertEqual(messages, [])
+
+    def test_async_gen_asyncio_shutdown_exception_01(self):
+        messages = []
+
+        def exception_handler(loop, context):
+            messages.append(context)
+
+        async def async_iterate():
+            try:
+                yield 1
+                yield 2
+            finally:
+                1/0
+
+        it = async_iterate()
+        async def main():
+            loop = asyncio.get_running_loop()
+            loop.set_exception_handler(exception_handler)
+
+            async for i in it:
+                break
+
+        asyncio.run(main())
+
+        message, = messages
+        self.assertEqual(message['asyncgen'], it)
+        self.assertIsInstance(message['exception'], ZeroDivisionError)
+        self.assertIn('an error occurred during closing of asynchronous generator',
+                      message['message'])
+
+    def test_async_gen_asyncio_shutdown_exception_02(self):
+        messages = []
+
+        def exception_handler(loop, context):
+            messages.append(context)
+
+        async def async_iterate():
+            try:
+                yield 1
+                yield 2
+            finally:
+                1/0
+
+        async def main():
+            loop = asyncio.get_running_loop()
+            loop.set_exception_handler(exception_handler)
+
+            async for i in async_iterate():
+                break
+
+        asyncio.run(main())
+
+        message, = messages
+        self.assertIsInstance(message['exception'], ZeroDivisionError)
+        self.assertIn('unhandled exception during asyncio.run() shutdown',
+                      message['message'])
+
     def test_async_gen_expression_01(self):
         async def arange(n):
             for i in range(n):
@@ -1128,7 +1208,7 @@ class AsyncGenAsyncioTest(unittest.TestCase):
 
         self.assertEqual([], messages)
 
-    def test_async_gen_await_anext_twice(self):
+    def test_async_gen_await_same_anext_coro_twice(self):
         async def async_iterate():
             yield 1
             yield 2
@@ -1147,7 +1227,7 @@ class AsyncGenAsyncioTest(unittest.TestCase):
 
         self.loop.run_until_complete(run())
 
-    def test_async_gen_await_aclose_twice(self):
+    def test_async_gen_await_same_aclose_coro_twice(self):
         async def async_iterate():
             yield 1
             yield 2
@@ -1161,6 +1241,47 @@ class AsyncGenAsyncioTest(unittest.TestCase):
                     r"cannot reuse already awaited aclose\(\)/athrow\(\)"
             ):
                 await nxt
+
+        self.loop.run_until_complete(run())
+
+    def test_async_gen_aclose_twice_with_different_coros(self):
+        # Regression test for https://bugs.python.org/issue39606
+        async def async_iterate():
+            yield 1
+            yield 2
+
+        async def run():
+            it = async_iterate()
+            await it.aclose()
+            await it.aclose()
+
+        self.loop.run_until_complete(run())
+
+    def test_async_gen_aclose_after_exhaustion(self):
+        # Regression test for https://bugs.python.org/issue39606
+        async def async_iterate():
+            yield 1
+            yield 2
+
+        async def run():
+            it = async_iterate()
+            async for _ in it:
+                pass
+            await it.aclose()
+
+        self.loop.run_until_complete(run())
+
+    def test_async_gen_aclose_compatible_with_get_stack(self):
+        async def async_generator():
+            yield object()
+
+        async def run():
+            ag = async_generator()
+            asyncio.create_task(ag.aclose())
+            tasks = asyncio.all_tasks()
+            for task in tasks:
+                # No AttributeError raised
+                task.get_stack()
 
         self.loop.run_until_complete(run())
 

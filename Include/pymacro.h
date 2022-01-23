@@ -101,7 +101,7 @@
 #endif
 
 #if defined(RANDALL_WAS_HERE)
-#define Py_UNREACHABLE() \
+#  define Py_UNREACHABLE() \
     Py_FatalError( \
         "If you're seeing this, the code is in what I thought was\n" \
         "an unreachable state.\n\n" \

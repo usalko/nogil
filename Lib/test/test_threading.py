@@ -3,7 +3,7 @@ Tests for the threading module.
 """
 
 import test.support
-from test.support import verbose, import_module, cpython_only
+from test.support import verbose, import_module, cpython_only, unlink
 from test.support.script_helper import assert_python_ok, assert_python_failure
 
 import random
@@ -17,7 +17,7 @@ import os
 import subprocess
 import signal
 import textwrap
-import gc
+import traceback
 
 from test import lock_tests
 from test import support
@@ -402,7 +402,7 @@ class ThreadTests(BaseTestCase):
         weak_cyclic_object = weakref.ref(cyclic_object)
         cyclic_object.thread.join()
         del cyclic_object
-        gc.collect()
+        support.gc_collect()
         self.assertIsNone(weak_cyclic_object(),
                          msg=('%d references still around' %
                               sys.getrefcount(weak_cyclic_object())))
@@ -411,7 +411,7 @@ class ThreadTests(BaseTestCase):
         weak_raising_cyclic_object = weakref.ref(raising_cyclic_object)
         raising_cyclic_object.thread.join()
         del raising_cyclic_object
-        gc.collect()
+        support.gc_collect()
         self.assertIsNone(weak_raising_cyclic_object(),
                          msg=('%d references still around' %
                               sys.getrefcount(weak_raising_cyclic_object())))
@@ -441,6 +441,35 @@ class ThreadTests(BaseTestCase):
         self.assertFalse(t.daemon)
         t = threading.Thread(daemon=True)
         self.assertTrue(t.daemon)
+
+    @unittest.skipUnless(hasattr(os, 'fork'), 'needs os.fork()')
+    def test_fork_at_exit(self):
+        # bpo-42350: Calling os.fork() after threading._shutdown() must
+        # not log an error.
+        code = textwrap.dedent("""
+            import atexit
+            import os
+            import sys
+            from test.support import wait_process
+
+            # Import the threading module to register its "at fork" callback
+            import threading
+
+            def exit_handler():
+                pid = os.fork()
+                if not pid:
+                    print("child process ok", file=sys.stderr, flush=True)
+                    # child process
+                    sys.exit()
+                else:
+                    wait_process(pid, exitcode=0)
+
+            # exit_handler() will be called after threading._shutdown()
+            atexit.register(exit_handler)
+        """)
+        _, out, err = assert_python_ok("-c", code)
+        self.assertEqual(out, b'')
+        self.assertEqual(err.rstrip(), b'child process ok')
 
     @unittest.skipUnless(hasattr(os, 'fork'), 'test needs fork()')
     def test_dummy_thread_after_fork(self):
@@ -488,9 +517,7 @@ class ThreadTests(BaseTestCase):
             else:
                 t.join()
 
-                pid, status = os.waitpid(pid, 0)
-                self.assertTrue(os.WIFEXITED(status))
-                self.assertEqual(10, os.WEXITSTATUS(status))
+                support.wait_process(pid, exitcode=10)
 
     def test_main_thread(self):
         main = threading.main_thread()
@@ -510,6 +537,7 @@ class ThreadTests(BaseTestCase):
     def test_main_thread_after_fork(self):
         code = """if 1:
             import os, threading
+            from test import support
 
             pid = os.fork()
             if pid == 0:
@@ -518,7 +546,7 @@ class ThreadTests(BaseTestCase):
                 print(main.ident == threading.current_thread().ident)
                 print(main.ident == threading.get_ident())
             else:
-                os.waitpid(pid, 0)
+                support.wait_process(pid, exitcode=0)
         """
         _, out, err = assert_python_ok("-c", code)
         data = out.decode().replace('\r', '')
@@ -532,6 +560,7 @@ class ThreadTests(BaseTestCase):
     def test_main_thread_after_fork_from_nonmain_thread(self):
         code = """if 1:
             import os, threading, sys
+            from test import support
 
             def f():
                 pid = os.fork()
@@ -544,7 +573,7 @@ class ThreadTests(BaseTestCase):
                     # we have to flush before exit.
                     sys.stdout.flush()
                 else:
-                    os.waitpid(pid, 0)
+                    support.wait_process(pid, exitcode=0)
 
             th = threading.Thread(target=f)
             th.start()
@@ -619,6 +648,7 @@ class ThreadTests(BaseTestCase):
         rc, out, err = assert_python_ok("-c", code)
         self.assertEqual(err, b"")
 
+    @cpython_only
     def test_done_event(self):
         # Test an implementation detail of Thread objects.
         started = _thread.allocate_lock()
@@ -642,11 +672,6 @@ class ThreadTests(BaseTestCase):
         # When the thread ends, the state_lock can be successfully
         # acquired.
         self.assertTrue(t._done_event.wait(support.SHORT_TIMEOUT), False)
-        # Let is_alive() find out the C code is done.
-        # tstate_lock.release()
-        self.assertFalse(t.is_alive())
-        self.assertTrue(t._done_event.is_set())
-        t.join()
 
     def test_repr_stopped(self):
         # Verify that "stopped" shows up in repr(Thread) appropriately.
@@ -733,6 +758,64 @@ class ThreadTests(BaseTestCase):
         finally:
             sys.settrace(old_trace)
 
+    def test_locals_at_exit(self):
+        # bpo-19466: thread locals must not be deleted before destructors
+        # are called
+        rc, out, err = assert_python_ok("-c", """if 1:
+            import threading
+
+            class Atexit:
+                def __del__(self):
+                    print("thread_dict.atexit = %r" % thread_dict.atexit)
+
+            thread_dict = threading.local()
+            thread_dict.atexit = "value"
+
+            atexit = Atexit()
+        """)
+        self.assertEqual(out.rstrip(), b"thread_dict.atexit = 'value'")
+
+    def test_leak_without_join(self):
+        # bpo-37788: Test that a thread which is not joined explicitly
+        # does not leak. Test written for reference leak checks.
+        def noop(): pass
+        with support.wait_threads_exit():
+            threading.Thread(target=noop).start()
+            # Thread.join() is not called
+
+    def test_import_from_another_thread(self):
+        # bpo-1596321: If the threading module is first import from a thread
+        # different than the main thread, threading._shutdown() must handle
+        # this case without logging an error at Python exit.
+        code = textwrap.dedent('''
+            import _thread
+            import sys
+
+            event = _thread.allocate_lock()
+            event.acquire()
+
+            def import_threading():
+                import threading
+                event.release()
+
+            if 'threading' in sys.modules:
+                raise Exception('threading is already imported')
+
+            _thread.start_new_thread(import_threading, ())
+
+            # wait until the threading module is imported
+            event.acquire()
+            event.release()
+
+            if 'threading' not in sys.modules:
+                raise Exception('threading is not imported')
+
+            # don't wait until the thread completes
+        ''')
+        rc, out, err = assert_python_ok("-c", code)
+        self.assertEqual(out, b'')
+        self.assertEqual(err, b'')
+
 
 class ThreadJoinOnShutdown(BaseTestCase):
 
@@ -770,11 +853,15 @@ class ThreadJoinOnShutdown(BaseTestCase):
     def test_2_join_in_forked_process(self):
         # Like the test above, but from a forked interpreter
         script = """if 1:
+            from test import support
+
             childpid = os.fork()
             if childpid != 0:
-                os.waitpid(childpid, 0)
+                # parent process
+                support.wait_process(childpid, exitcode=0)
                 sys.exit(0)
 
+            # child process
             t = threading.Thread(target=joiningfunc,
                                  args=(threading.current_thread(),))
             t.start()
@@ -789,13 +876,17 @@ class ThreadJoinOnShutdown(BaseTestCase):
         # In the forked process, the main Thread object must be marked as stopped.
 
         script = """if 1:
+            from test import support
+
             main_thread = threading.current_thread()
             def worker():
                 childpid = os.fork()
                 if childpid != 0:
-                    os.waitpid(childpid, 0)
+                    # parent process
+                    support.wait_process(childpid, exitcode=0)
                     sys.exit(0)
 
+                # child process
                 t = threading.Thread(target=joiningfunc,
                                      args=(main_thread,))
                 print('end of main')
@@ -858,9 +949,9 @@ class ThreadJoinOnShutdown(BaseTestCase):
             # just fork a child process and wait it
             pid = os.fork()
             if pid > 0:
-                os.waitpid(pid, 0)
+                support.wait_process(pid, exitcode=50)
             else:
-                os._exit(0)
+                os._exit(50)
 
         # start a bunch of threads that will fork() child processes
         threads = []
@@ -887,12 +978,11 @@ class ThreadJoinOnShutdown(BaseTestCase):
         if pid == 0:
             # check that threads states have been cleared
             if len(sys._current_frames()) == 1:
-                os._exit(0)
+                os._exit(51)
             else:
-                os._exit(1)
+                os._exit(52)
         else:
-            _, status = os.waitpid(pid, 0)
-            self.assertEqual(0, status)
+            support.wait_process(pid, exitcode=51)
 
         for t in threads:
             t.join()
@@ -972,32 +1062,28 @@ class SubinterpThreadingTests(BaseTestCase):
         # The thread was joined properly.
         self.assertEqual(os.read(r, 1), b"x")
 
-    def test_daemon_thread(self):
-        r, w = self.pipe()
-        code = textwrap.dedent(f"""
+    @cpython_only
+    def test_daemon_threads_fatal_error(self):
+        subinterp_code = f"""if 1:
+            import os
             import threading
-            import sys
+            import time
 
-            channel = open({w}, "w", closefd=False)
+            def f():
+                # Make sure the daemon thread is still running when
+                # Py_EndInterpreter is called.
+                time.sleep({test.support.SHORT_TIMEOUT})
+            threading.Thread(target=f, daemon=True).start()
+            """
+        script = r"""if 1:
+            import _testcapi
 
-            def func():
-                pass
-
-            thread = threading.Thread(target=func, daemon=True)
-            try:
-                thread.start()
-            except RuntimeError as exc:
-                print("ok: %s" % exc, file=channel, flush=True)
-            else:
-                thread.join()
-                print("fail: RuntimeError not raised", file=channel, flush=True)
-        """)
-        ret = test.support.run_in_subinterp(code)
-        self.assertEqual(ret, 0)
-
-        msg = os.read(r, 100).decode().rstrip()
-        self.assertEqual("ok: daemon thread are not supported "
-                         "in subinterpreters", msg)
+            _testcapi.run_in_subinterp(%r)
+            """ % (subinterp_code,)
+        with test.support.SuppressCrashReport():
+            rc, out, err = assert_python_failure("-c", script)
+        self.assertIn("Fatal Python error: Py_EndInterpreter: "
+                      "not the last thread", err.decode())
 
 
 class ThreadingExceptionTests(BaseTestCase):
@@ -1159,6 +1245,22 @@ class ThreadingExceptionTests(BaseTestCase):
         self.assertIsInstance(thread.exc, RuntimeError)
         # explicitly break the reference cycle to not leak a dangling thread
         thread.exc = None
+
+    def test_multithread_modify_file_noerror(self):
+        # See issue25872
+        def modify_file():
+            with open(test.support.TESTFN, 'w', encoding='utf-8') as fp:
+                fp.write(' ')
+                traceback.format_stack()
+
+        self.addCleanup(unlink, test.support.TESTFN)
+        threads = [
+            threading.Thread(target=modify_file)
+            for i in range(100)
+        ]
+        for t in threads:
+            t.start()
+            t.join()
 
 
 class ThreadRunFail(threading.Thread):
@@ -1353,6 +1455,56 @@ class InterruptMainTests(unittest.TestCase):
         finally:
             # Restore original handler
             signal.signal(signal.SIGINT, handler)
+
+
+class AtexitTests(unittest.TestCase):
+
+    def test_atexit_output(self):
+        rc, out, err = assert_python_ok("-c", """if True:
+            import threading
+
+            def run_last():
+                print('parrot')
+
+            threading._register_atexit(run_last)
+        """)
+
+        self.assertFalse(err)
+        self.assertEqual(out.strip(), b'parrot')
+
+    def test_atexit_called_once(self):
+        rc, out, err = assert_python_ok("-c", """if True:
+            import threading
+            from unittest.mock import Mock
+
+            mock = Mock()
+            threading._register_atexit(mock)
+            mock.assert_not_called()
+            # force early shutdown to ensure it was called once
+            threading._shutdown()
+            mock.assert_called_once()
+        """)
+
+        self.assertFalse(err)
+
+    def test_atexit_after_shutdown(self):
+        # The only way to do this is by registering an atexit within
+        # an atexit, which is intended to raise an exception.
+        rc, out, err = assert_python_ok("-c", """if True:
+            import threading
+
+            def func():
+                pass
+
+            def run_last():
+                threading._register_atexit(func)
+
+            threading._register_atexit(run_last)
+        """)
+
+        self.assertTrue(err)
+        self.assertIn("RuntimeError: can't register atexit after shutdown",
+                err.decode())
 
 
 if __name__ == "__main__":

@@ -15,15 +15,11 @@ typedef struct {
     int b_callablelevel;        /* callable stack level to pop to */
 } PyTryBlock;
 
-struct _PyCodeObject2;
-typedef struct _PyCodeObject2 PyCodeObject2;
-
-typedef struct _frame {
+struct _frame {
     PyObject_VAR_HEAD
     struct _frame *f_back;      /* previous frame, or NULL */
     PyCodeObject *f_code;       /* code segment */
-    PyCodeObject2 *f_code2;       /* code segment */
-    struct ThreadState *ts;
+    struct ThreadState *f_ts;
     PyObject *f_builtins;       /* builtin symbol table (PyDictObject) */
     PyObject *f_globals;        /* global symbol table (PyDictObject) */
     PyObject *f_locals;         /* local symbol table (any mapping) */
@@ -53,26 +49,25 @@ typedef struct _frame {
     char f_trace_lines;         /* Emit per-line trace events? */
     char f_trace_opcodes;       /* Emit per-opcode trace events? */
     char f_executing;           /* whether the frame is still executing */
-    char f_retains_code;        /* Use deferred ref counting for builtins, globals, code */
     Py_ssize_t f_offset;        /* offset from the bottom of the stack */
 
     /* tracing stuff */
     int instr_lb;
     int instr_ub;
+    int instr_prev;
     int last_line;
     unsigned int seen_func_header : 1;
     unsigned int traced_func : 1;
 
-    PyTryBlock *f_blockstack;
     PyObject *f_localsplus[1];  /* locals+stack, dynamically sized */
-} PyFrameObject;
+};
 
 
 /* Standard object interface */
 
 PyAPI_DATA(PyTypeObject) PyFrame_Type;
 
-#define PyFrame_Check(op) (Py_TYPE(op) == &PyFrame_Type)
+#define PyFrame_Check(op) Py_IS_TYPE(op, &PyFrame_Type)
 
 PyAPI_FUNC(PyFrameObject *) PyFrame_New(PyThreadState *, PyCodeObject *,
                                         PyObject *, PyObject *);
@@ -81,7 +76,7 @@ PyAPI_FUNC(PyFrameObject *) PyFrame_New(PyThreadState *, PyCodeObject *,
 PyFrameObject* _PyFrame_New_NoTrack(PyThreadState *, PyCodeObject *,
                                     PyObject *, PyObject *);
 
-PyFrameObject* _PyFrame_NewFake(PyCodeObject2 *, PyObject *);
+PyFrameObject* _PyFrame_NewFake(PyCodeObject *, PyObject *);
 
 
 /* The rest of the interface is specific for frame objects */
@@ -100,15 +95,9 @@ PyAPI_FUNC(void) PyFrame_LocalsToFast(PyFrameObject *, int);
 PyAPI_FUNC(int) PyFrame_FastToLocalsWithError(PyFrameObject *f);
 PyAPI_FUNC(void) PyFrame_FastToLocals(PyFrameObject *);
 
-PyAPI_FUNC(void) PyFrame_RetainForGC(PyFrameObject *);
-PyAPI_FUNC(void) PyFrame_UnretainForGC(PyFrameObject *);
-
-PyAPI_FUNC(int) PyFrame_ClearFreeList(void);
-
 PyAPI_FUNC(void) _PyFrame_DebugMallocStats(FILE *out);
 
-/* Return the line of code the frame is currently executing. */
-PyAPI_FUNC(int) PyFrame_GetLineNumber(PyFrameObject *);
+PyAPI_FUNC(PyFrameObject *) PyFrame_GetBack(PyFrameObject *frame);
 
 #ifdef __cplusplus
 }

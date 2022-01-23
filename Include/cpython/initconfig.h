@@ -150,6 +150,10 @@ typedef struct {
        Set to 1 by -X faulthandler and PYTHONFAULTHANDLER. -1 means unset. */
     int faulthandler;
 
+    /* Enable PEG parser?
+       1 by default, set to 0 by -X oldparser and PYTHONOLDPARSER */
+    int _use_peg_parser;
+
     /* Enable tracemalloc?
        Set by -X tracemalloc=N and PYTHONTRACEMALLOC. -1 means unset */
     int tracemalloc;
@@ -387,6 +391,7 @@ typedef struct {
     wchar_t *base_prefix;       /* sys.base_prefix */
     wchar_t *exec_prefix;       /* sys.exec_prefix */
     wchar_t *base_exec_prefix;  /* sys.base_exec_prefix */
+    wchar_t *platlibdir;        /* sys.platlibdir */
 
     /* --- Parameter only used by Py_Main() ---------- */
 
@@ -408,6 +413,18 @@ typedef struct {
 
     /* If equal to 0, stop Python initialization before the "main" phase */
     int _init_main;
+
+    /* If non-zero, disallow threads, subprocesses, and fork.
+       Default: 0. */
+    int _isolated_interpreter;
+
+    /* Original command line arguments. If _orig_argv is empty and _argv is
+       not equal to [''], PyConfig_Read() copies the configuration 'argv' list
+       into '_orig_argv' list before modifying 'argv' list (if parse_argv
+       is non-zero).
+
+       _PyConfig_Write() initializes Py_GetArgcArgv() to this list. */
+    PyWideStringList _orig_argv;
 } PyConfig;
 
 PyAPI_FUNC(void) PyConfig_InitPythonConfig(PyConfig *config);
@@ -432,6 +449,14 @@ PyAPI_FUNC(PyStatus) PyConfig_SetArgv(PyConfig *config,
 PyAPI_FUNC(PyStatus) PyConfig_SetWideStringList(PyConfig *config,
     PyWideStringList *list,
     Py_ssize_t length, wchar_t **items);
+
+
+/* --- Helper functions --------------------------------------- */
+
+/* Get the original command line arguments, before Python modified them.
+
+   See also PyConfig._orig_argv. */
+PyAPI_FUNC(void) Py_GetArgcArgv(int *argc, wchar_t ***argv);
 
 #ifdef __cplusplus
 }

@@ -102,7 +102,7 @@ bytes(cdata)
 #define PY_SSIZE_T_CLEAN
 
 #include "Python.h"
-#include "structmember.h"
+#include "structmember.h"         // PyMemberDef
 
 #include <ffi.h>
 #ifdef MS_WIN32
@@ -232,7 +232,7 @@ PyDict_SetItemProxy(PyObject *dict, PyObject *key, PyObject *item)
     return result;
 }
 
-PyObject *
+static PyObject *
 PyDict_GetItemProxy(PyObject *dict, PyObject *key)
 {
     PyObject *result;
@@ -240,9 +240,11 @@ PyDict_GetItemProxy(PyObject *dict, PyObject *key)
 
     if (item == NULL)
         return NULL;
-    if (!PyWeakref_CheckProxy(item))
+    if (!PyWeakref_CheckProxy(item)) {
+        Py_INCREF(item);
         return item;
-    result = PyWeakref_GET_OBJECT(item);
+    }
+    result = PyWeakref_LockObject(item);
     if (result == Py_None)
         return NULL;
     return result;
@@ -1310,7 +1312,7 @@ CharArray_get_value(CDataObject *self, void *Py_UNUSED(ignored))
 static int
 CharArray_set_value(CDataObject *self, PyObject *value, void *Py_UNUSED(ignored))
 {
-    char *ptr;
+    const char *ptr;
     Py_ssize_t size;
 
     if (value == NULL) {
@@ -4798,6 +4800,12 @@ Array_length(PyObject *myself)
     return self->b_length;
 }
 
+static PyMethodDef Array_methods[] = {
+    {"__class_getitem__",    (PyCFunction)Py_GenericAlias,
+    METH_O|METH_CLASS,       PyDoc_STR("See PEP 585")},
+    { NULL, NULL }
+};
+
 static PySequenceMethods Array_as_sequence = {
     Array_length,                               /* sq_length; */
     0,                                          /* sq_concat; */
@@ -4846,7 +4854,7 @@ PyTypeObject PyCArray_Type = {
     0,                                          /* tp_weaklistoffset */
     0,                                          /* tp_iter */
     0,                                          /* tp_iternext */
-    0,                                          /* tp_methods */
+    Array_methods,                              /* tp_methods */
     0,                                          /* tp_members */
     0,                                          /* tp_getset */
     0,                                          /* tp_base */
@@ -4883,7 +4891,6 @@ PyCArrayType_from_ctype(PyObject *itemtype, Py_ssize_t length)
         return NULL;
     result = PyDict_GetItemProxy(cache, key);
     if (result) {
-        Py_INCREF(result);
         Py_DECREF(key);
         return result;
     }
@@ -5695,7 +5702,6 @@ PyInit__ctypes(void)
    ob_type is the metatype (the 'type'), defaults to PyType_Type,
    tp_base is the base type, defaults to 'object' aka PyBaseObject_Type.
 */
-    PyEval_InitThreads();
     m = PyModule_Create(&_ctypesmodule);
     if (!m)
         return NULL;

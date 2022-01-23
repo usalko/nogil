@@ -476,6 +476,7 @@ class PydocDocTest(unittest.TestCase):
     def test_non_str_name(self):
         # issue14638
         # Treat illegal (non-str) name like no name
+
         class A:
             __name__ = 42
         class B:
@@ -1254,7 +1255,9 @@ cm(x) method of builtins.type instance
 
         X.attr.__doc__ = 'Custom descriptor'
         self.assertEqual(self._get_summary_lines(X.attr), """\
-<test.test_pydoc.TestDescriptions.test_custom_non_data_descriptor.<locals>.Descr object>""")
+<test.test_pydoc.TestDescriptions.test_custom_non_data_descriptor.<locals>.Descr object>
+    Custom descriptor
+""")
 
         X.attr.__name__ = 'foo'
         self.assertEqual(self._get_summary_lines(X.attr), """\
@@ -1371,17 +1374,11 @@ class PydocUrlHandlerTest(PydocBaseTest):
             ("topic?key=def", "Pydoc: KEYWORD def"),
             ("topic?key=STRINGS", "Pydoc: TOPIC STRINGS"),
             ("foobar", "Pydoc: Error - foobar"),
-            ("getfile?key=foobar", "Pydoc: Error - getfile?key=foobar"),
             ]
 
         with self.restrict_walk_packages():
             for url, title in requests:
                 self.call_url_handler(url, title)
-
-            path = string.__file__
-            title = "Pydoc: getfile " + path
-            url = "getfile?key=" + path
-            self.call_url_handler(url, title)
 
 
 class TestHelper(unittest.TestCase):
@@ -1572,20 +1569,11 @@ class TestInternalUtilities(unittest.TestCase):
                 self.assertIsNone(self._get_revised_path(trailing_argv0dir))
 
 
-@reap_threads
-def test_main():
-    try:
-        test.support.run_unittest(PydocDocTest,
-                                  PydocImportTest,
-                                  TestDescriptions,
-                                  PydocServerTest,
-                                  PydocUrlHandlerTest,
-                                  TestHelper,
-                                  PydocWithMetaClasses,
-                                  TestInternalUtilities,
-                                  )
-    finally:
-        reap_children()
+def setUpModule():
+    thread_info = test.support.threading_setup()
+    unittest.addModuleCleanup(test.support.threading_cleanup, *thread_info)
+    unittest.addModuleCleanup(reap_children)
+
 
 if __name__ == "__main__":
-    test_main()
+    unittest.main()

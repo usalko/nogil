@@ -118,7 +118,7 @@ static inline intptr_t mi_atomic_subi(volatile _Atomic(intptr_t)* p, intptr_t su
 // Atomically compare and exchange a pointer; returns `true` if successful. Memory order is acquire_release.
 // (Note: expected and desired are in opposite order from atomic_compare_exchange)
 #define mi_atomic_cas_ptr_strong(T,p,desired,expected) \
-  mi_atomic_cas_strong((volatile _Atomic(uintptr_t)*)(p),(uintptr_t)((T*)(desired)), (uintptr_t)((T*)(expected)))
+  mi_atomic_cas_strong((volatile _Atomic(uintptr_t)*)(p),(uintptr_t)((T*)(desired)), (uintptr_t)((T*)(expected))) 
 
 // Atomically exchange a pointer value.
 #define mi_atomic_exchange_ptr(T,p,exchange) \

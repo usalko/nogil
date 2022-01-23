@@ -100,7 +100,7 @@ To map anonymous memory, -1 should be passed as the fileno along with the length
 
    To ensure validity of the created memory mapping the file specified
    by the descriptor *fileno* is internally automatically synchronized
-   with physical backing store on Mac OS X and OpenVMS.
+   with physical backing store on macOS and OpenVMS.
 
    This example shows a simple way of using :class:`~mmap.mmap`::
 
@@ -244,7 +244,8 @@ To map anonymous memory, -1 should be passed as the fileno along with the length
    .. method:: readline()
 
       Returns a single line, starting at the current file position and up to the
-      next newline.
+      next newline. The file position is updated to point after the bytes that were
+      returned.
 
 
    .. method:: resize(newsize)

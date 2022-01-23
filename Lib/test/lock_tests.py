@@ -2,6 +2,8 @@
 Various tests for synchronization primitives.
 """
 
+import os
+import gc
 import sys
 import time
 import _atomic
@@ -12,6 +14,11 @@ import unittest
 import weakref
 
 from test import support
+
+
+requires_fork = unittest.skipUnless(hasattr(os, 'fork'),
+                                    "platform doesn't support fork "
+                                     "(no _at_fork_reinit method)")
 
 
 def _wait():
@@ -229,6 +236,7 @@ class BaseLockTests(BaseTestCase):
         lock = self.locktype()
         ref = weakref.ref(lock)
         del lock
+        gc.collect()  # For PyPy or other GCs.
         self.assertIsNone(ref())
 
 
@@ -279,6 +287,25 @@ class LockTests(BaseLockTests):
         lock.release()
         self.assertFalse(lock.locked())
         self.assertTrue(lock.acquire(blocking=False))
+
+    @requires_fork
+    def test_at_fork_reinit(self):
+        def use_lock(lock):
+            # make sure that the lock still works normally
+            # after _at_fork_reinit()
+            lock.acquire()
+            lock.release()
+
+        # unlocked
+        lock = self.locktype()
+        lock._at_fork_reinit()
+        use_lock(lock)
+
+        # locked: _at_fork_reinit() resets the lock to the unlocked state
+        lock2 = self.locktype()
+        lock2.acquire()
+        lock2._at_fork_reinit()
+        use_lock(lock2)
 
 
 class RLockTests(BaseLockTests):
@@ -432,12 +459,13 @@ class EventTests(BaseTestCase):
         b.wait_for_finished()
         self.assertEqual(results, [True] * N)
 
-    def test_reset_internal_locks(self):
+    @requires_fork
+    def test_at_fork_reinit(self):
         # ensure that condition is still using a Lock after reset
         evt = self.eventtype()
         with evt._cond:
             self.assertFalse(evt._cond.acquire(False))
-        evt._reset_internal_locks()
+        evt._at_fork_reinit()
         with evt._cond:
             self.assertFalse(evt._cond.acquire(False))
 

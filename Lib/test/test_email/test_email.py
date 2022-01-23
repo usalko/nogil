@@ -11,8 +11,8 @@ import textwrap
 from io import StringIO, BytesIO
 from itertools import chain
 from random import choice
-from socket import getfqdn
 from threading import Thread
+from unittest.mock import patch
 
 import email
 import email.policy
@@ -310,6 +310,41 @@ class TestMessageAPI(TestEmailBase):
         g = Generator(s, policy=newpolicy)
         g.flatten(msg)
         self.assertEqual(fullrepr, s.getvalue())
+
+    def test_nonascii_as_string_without_cte(self):
+        m = textwrap.dedent("""\
+            MIME-Version: 1.0
+            Content-type: text/plain; charset="iso-8859-1"
+
+            Test if non-ascii messages with no Content-Transfer-Encoding set
+            can be as_string'd:
+            Föö bär
+            """)
+        source = m.encode('iso-8859-1')
+        expected = textwrap.dedent("""\
+            MIME-Version: 1.0
+            Content-type: text/plain; charset="iso-8859-1"
+            Content-Transfer-Encoding: quoted-printable
+
+            Test if non-ascii messages with no Content-Transfer-Encoding set
+            can be as_string'd:
+            F=F6=F6 b=E4r
+            """)
+        msg = email.message_from_bytes(source)
+        self.assertEqual(msg.as_string(), expected)
+
+    def test_nonascii_as_string_without_content_type_and_cte(self):
+        m = textwrap.dedent("""\
+            MIME-Version: 1.0
+
+            Test if non-ascii messages with no Content-Type nor
+            Content-Transfer-Encoding set can be as_string'd:
+            Föö bär
+            """)
+        source = m.encode('iso-8859-1')
+        expected = source.decode('ascii', 'replace')
+        msg = email.message_from_bytes(source)
+        self.assertEqual(msg.as_string(), expected)
 
     def test_as_bytes(self):
         msg = self._msgobj('msg_01.txt')
@@ -2967,10 +3002,13 @@ class TestMiscellaneous(TestEmailBase):
     def test_parsedate_returns_None_for_invalid_strings(self):
         self.assertIsNone(utils.parsedate(''))
         self.assertIsNone(utils.parsedate_tz(''))
+        self.assertIsNone(utils.parsedate(' '))
+        self.assertIsNone(utils.parsedate_tz(' '))
         self.assertIsNone(utils.parsedate('0'))
         self.assertIsNone(utils.parsedate_tz('0'))
         self.assertIsNone(utils.parsedate('A Complete Waste of Time'))
         self.assertIsNone(utils.parsedate_tz('A Complete Waste of Time'))
+        self.assertIsNone(utils.parsedate_tz('Wed, 3 Apr 2002 12.34.56.78+0800'))
         # Not a part of the spec but, but this has historically worked:
         self.assertIsNone(utils.parsedate(None))
         self.assertIsNone(utils.parsedate_tz(None))
@@ -3227,6 +3265,11 @@ Foo
         addrs = utils.getaddresses(['User ((nested comment)) <foo@bar.com>'])
         eq(addrs[0][1], 'foo@bar.com')
 
+    def test_getaddresses_header_obj(self):
+        """Test the handling of a Header object."""
+        addrs = utils.getaddresses([Header('Al Person <aperson@dom.ain>')])
+        self.assertEqual(addrs[0][1], 'aperson@dom.ain')
+
     def test_make_msgid_collisions(self):
         # Test make_msgid uniqueness, even with multiple threads
         class MsgidsThread(Thread):
@@ -3342,9 +3385,11 @@ multipart/report
             '.test-idstring@testdomain-string>')
 
     def test_make_msgid_default_domain(self):
-        self.assertTrue(
-            email.utils.make_msgid().endswith(
-                '@' + getfqdn() + '>'))
+        with patch('socket.getfqdn') as mock_getfqdn:
+            mock_getfqdn.return_value = domain = 'pythontest.example.com'
+            self.assertTrue(
+                email.utils.make_msgid().endswith(
+                    '@' + domain + '>'))
 
     def test_Generator_linend(self):
         # Issue 14645.

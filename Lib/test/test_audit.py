@@ -51,21 +51,10 @@ class AuditTest(unittest.TestCase):
     def test_block_add_hook_baseexception(self):
         self.do_test("test_block_add_hook_baseexception")
 
-    def test_finalize_hooks(self):
-        returncode, events, stderr = self.run_python("test_finalize_hooks")
-        if stderr:
-            print(stderr, file=sys.stderr)
-        if returncode:
-            self.fail(stderr)
+    def test_marshal(self):
+        support.import_module("marshal")
 
-        firstId = events[0][2]
-        self.assertSequenceEqual(
-            [
-                ("Created", " ", firstId),
-                ("cpython._PySys_ClearAuditHooks", " ", firstId),
-            ],
-            events,
-        )
+        self.do_test("test_marshal")
 
     def test_pickle(self):
         support.import_module("pickle")
@@ -117,6 +106,31 @@ class AuditTest(unittest.TestCase):
         self.assertSequenceEqual(["winreg.EnumKey", " ", f"{expected} 0"], events[2])
         self.assertSequenceEqual(["winreg.EnumKey", " ", f"{expected} 10000"], events[3])
         self.assertSequenceEqual(["winreg.PyHKEY.Detach", " ", expected], events[4])
+
+    def test_socket(self):
+        support.import_module("socket")
+        returncode, events, stderr = self.run_python("test_socket")
+        if returncode:
+            self.fail(stderr)
+
+        if support.verbose:
+            print(*events, sep='\n')
+        self.assertEqual(events[0][0], "socket.gethostname")
+        self.assertEqual(events[1][0], "socket.__new__")
+        self.assertEqual(events[2][0], "socket.bind")
+        self.assertTrue(events[2][2].endswith("('127.0.0.1', 8080)"))
+
+    def test_gc(self):
+        returncode, events, stderr = self.run_python("test_gc")
+        if returncode:
+            self.fail(stderr)
+
+        if support.verbose:
+            print(*events, sep='\n')
+        self.assertEqual(
+            [event[0] for event in events],
+            ["gc.get_objects", "gc.get_referrers", "gc.get_referents"]
+        )
 
 
 if __name__ == "__main__":

@@ -80,12 +80,16 @@ library that Python uses on your platform. On most platforms the
 .. versionadded:: 3.6
    :func:`blake2b` and :func:`blake2s` were added.
 
+.. _hashlib-usedforsecurity:
+
 .. versionchanged:: 3.9
    All hashlib constructors take a keyword-only argument *usedforsecurity*
    with default value ``True``. A false value allows the use of insecure and
    blocked hashing algorithms in restricted environments. ``False`` indicates
    that the hashing algorithm is not used in a security context, e.g. as a
    non-cryptographic one-way compression function.
+
+   Hashlib now uses SHA3 and SHAKE from OpenSSL 1.1.1 and newer.
 
 For example, to obtain the digest of the byte string ``b'Nobody inspects the
 spammish repetition'``::
@@ -116,10 +120,10 @@ More condensed:
 
 Using :func:`new` with an algorithm provided by OpenSSL:
 
-   >>> h = hashlib.new('ripemd160')
+   >>> h = hashlib.new('sha512_256')
    >>> h.update(b"Nobody inspects the spammish repetition")
    >>> h.hexdigest()
-   'cc4a5ce1b3df48aec5d22d1f16b894a0b894eccc'
+   '19197dc4d03829df858011c6c87600f994a858103bbc19005f20987aa19a97e2'
 
 Hashlib provides the following constant attributes:
 
@@ -368,10 +372,10 @@ Constructor functions also accept the following tree hashing parameters:
 * *depth*: maximal depth of tree (1 to 255, 255 if unlimited, 1 in
   sequential mode).
 
-* *leaf_size*: maximal byte length of leaf (0 to 2**32-1, 0 if unlimited or in
+* *leaf_size*: maximal byte length of leaf (0 to ``2**32-1``, 0 if unlimited or in
   sequential mode).
 
-* *node_offset*: node offset (0 to 2**64-1 for BLAKE2b, 0 to 2**48-1 for
+* *node_offset*: node offset (0 to ``2**64-1`` for BLAKE2b, 0 to ``2**48-1`` for
   BLAKE2s, 0 for the first, leftmost, leaf, or in sequential mode).
 
 * *node_depth*: node depth (0 to 255, 0 for leaves, or in sequential mode).
@@ -492,7 +496,7 @@ Keyed hashing
 
 Keyed hashing can be used for authentication as a faster and simpler
 replacement for `Hash-based message authentication code
-<https://en.wikipedia.org/wiki/Hash-based_message_authentication_code>`_ (HMAC).
+<https://en.wikipedia.org/wiki/HMAC>`_ (HMAC).
 BLAKE2 can be securely used in prefix-MAC mode thanks to the
 indifferentiability property inherited from BLAKE.
 

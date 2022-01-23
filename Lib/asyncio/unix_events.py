@@ -101,7 +101,7 @@ class _UnixSelectorEventLoop(selector_events.BaseSelectorEventLoop):
 
         try:
             # Register a dummy signal handler to ask Python to write the signal
-            # number in the wakup file descriptor. _process_self_data() will
+            # number in the wakeup file descriptor. _process_self_data() will
             # read signal numbers from this file descriptor to handle signals.
             signal.signal(sig, _sighandler_noop)
 
@@ -323,7 +323,7 @@ class _UnixSelectorEventLoop(selector_events.BaseSelectorEventLoop):
             server._start_serving()
             # Skip one loop iteration so that all 'loop.add_reader'
             # go through.
-            await tasks.sleep(0, loop=self)
+            await tasks.sleep(0)
 
         return server
 
@@ -1230,13 +1230,15 @@ class MultiLoopChildWatcher(AbstractChildWatcher):
 
     def close(self):
         self._callbacks.clear()
-        if self._saved_sighandler is not None:
-            handler = signal.getsignal(signal.SIGCHLD)
-            if handler != self._sig_chld:
-                logger.warning("SIGCHLD handler was changed by outside code")
-            else:
-                signal.signal(signal.SIGCHLD, self._saved_sighandler)
-            self._saved_sighandler = None
+        if self._saved_sighandler is None:
+            return
+
+        handler = signal.getsignal(signal.SIGCHLD)
+        if handler != self._sig_chld:
+            logger.warning("SIGCHLD handler was changed by outside code")
+        else:
+            signal.signal(signal.SIGCHLD, self._saved_sighandler)
+        self._saved_sighandler = None
 
     def __enter__(self):
         return self
@@ -1263,15 +1265,17 @@ class MultiLoopChildWatcher(AbstractChildWatcher):
         # The reason to do it here is that attach_loop() is called from
         # unix policy only for the main thread.
         # Main thread is required for subscription on SIGCHLD signal
-        if self._saved_sighandler is None:
-            self._saved_sighandler = signal.signal(signal.SIGCHLD, self._sig_chld)
-            if self._saved_sighandler is None:
-                logger.warning("Previous SIGCHLD handler was set by non-Python code, "
-                               "restore to default handler on watcher close.")
-                self._saved_sighandler = signal.SIG_DFL
+        if self._saved_sighandler is not None:
+            return
 
-            # Set SA_RESTART to limit EINTR occurrences.
-            signal.siginterrupt(signal.SIGCHLD, False)
+        self._saved_sighandler = signal.signal(signal.SIGCHLD, self._sig_chld)
+        if self._saved_sighandler is None:
+            logger.warning("Previous SIGCHLD handler was set by non-Python code, "
+                           "restore to default handler on watcher close.")
+            self._saved_sighandler = signal.SIG_DFL
+
+        # Set SA_RESTART to limit EINTR occurrences.
+        signal.siginterrupt(signal.SIGCHLD, False)
 
     def _do_waitpid_all(self):
         for pid in list(self._callbacks):
@@ -1379,7 +1383,7 @@ class ThreadedChildWatcher(AbstractChildWatcher):
     def remove_child_handler(self, pid):
         # asyncio never calls remove_child_handler() !!!
         # The method is no-op but is implemented because
-        # abstract base classe requires it
+        # abstract base classes require it.
         return True
 
     def attach_loop(self, loop):

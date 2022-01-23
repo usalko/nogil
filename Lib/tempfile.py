@@ -88,6 +88,10 @@ def _infer_return_type(*args):
     for arg in args:
         if arg is None:
             continue
+
+        if isinstance(arg, _os.PathLike):
+            arg = _os.fspath(arg)
+
         if isinstance(arg, bytes):
             if return_type is str:
                 raise TypeError("Can't mix bytes and non-bytes in "
@@ -308,8 +312,7 @@ def mkstemp(suffix=None, prefix=None, dir=None, text=False):
     otherwise a default directory is used.
 
     If 'text' is specified and true, the file is opened in text
-    mode.  Else (the default) the file is opened in binary mode.  On
-    some operating systems, this makes no difference.
+    mode.  Else (the default) the file is opened in binary mode.
 
     If any of 'suffix', 'prefix' and 'dir' are not None, they must be the
     same type.  If they are bytes, the returned name will be bytes; str
@@ -738,11 +741,7 @@ class SpooledTemporaryFile:
         return self._file.readlines(*args)
 
     def seek(self, *args):
-        self._file.seek(*args)
-
-    @property
-    def softspace(self):
-        return self._file.softspace
+        return self._file.seek(*args)
 
     def tell(self):
         return self._file.tell()
@@ -833,3 +832,5 @@ class TemporaryDirectory(object):
     def cleanup(self):
         if self._finalizer.detach():
             self._rmtree(self.name)
+
+    __class_getitem__ = classmethod(_types.GenericAlias)

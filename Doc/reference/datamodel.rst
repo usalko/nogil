@@ -17,7 +17,7 @@ Objects, values and types
 
 :dfn:`Objects` are Python's abstraction for data.  All data in a Python program
 is represented by objects or by relations between objects. (In a sense, and in
-conformance to Von Neumann's model of a "stored program computer," code is also
+conformance to Von Neumann's model of a "stored program computer", code is also
 represented by objects.)
 
 .. index::
@@ -156,12 +156,17 @@ NotImplemented
    object is accessed through the built-in name ``NotImplemented``. Numeric methods
    and rich comparison methods should return this value if they do not implement the
    operation for the operands provided.  (The interpreter will then try the
-   reflected operation, or some other fallback, depending on the operator.)  Its
-   truth value is true.
+   reflected operation, or some other fallback, depending on the operator.)  It
+   should not be evaluated in a boolean context.
 
    See
    :ref:`implementing-the-arithmetic-operations`
    for more details.
+
+   .. versionchanged:: 3.9
+      Evaluating ``NotImplemented`` in a boolean context is deprecated. While
+      it currently evaluates as true, it will emit a :exc:`DeprecationWarning`.
+      It will raise a :exc:`TypeError` in a future version of Python.
 
 
 Ellipsis
@@ -182,6 +187,24 @@ Ellipsis
    related to mathematical numbers, but subject to the limitations of numerical
    representation in computers.
 
+   The string representations of the numeric classes, computed by
+   :meth:`__repr__` and :meth:`__str__`, have the following
+   properties:
+
+   * They are valid numeric literals which, when passed to their
+     class constructor, produce an object having the value of the
+     original numeric.
+
+   * The representation is in base 10, when possible.
+
+   * Leading zeros, possibly excepting a single zero before a
+     decimal point, are not shown.
+
+   * Trailing zeros, possibly excepting a single zero after a
+     decimal point, are not shown.
+
+   * A sign is shown only when the number is negative.
+
    Python distinguishes between integers, floating point numbers, and complex
    numbers:
 
@@ -194,7 +217,6 @@ Ellipsis
       There are two types of integers:
 
       Integers (:class:`int`)
-
          These represent numbers in an unlimited range, subject to available (virtual)
          memory only.  For the purpose of shift and mask operations, a binary
          representation is assumed, and negative numbers are represented in a variant of
@@ -420,6 +442,11 @@ Mappings
       equal (e.g., ``1`` and ``1.0``) then they can be used interchangeably to index
       the same dictionary entry.
 
+      Dictionaries preserve insertion order, meaning that keys will be produced
+      in the same order they were added sequentially over the dictionary.
+      Replacing an existing key does not change the order, however removing a key
+      and re-inserting it will add it to the end instead of keeping its old place.
+
       Dictionaries are mutable; they can be created by the ``{...}`` notation (see
       section :ref:`dict`).
 
@@ -430,6 +457,11 @@ Mappings
       The extension modules :mod:`dbm.ndbm` and :mod:`dbm.gnu` provide
       additional examples of mapping types, as does the :mod:`collections`
       module.
+
+      .. versionchanged:: 3.7
+         Dictionaries did not preserve insertion order in versions of Python before 3.6.
+         In CPython 3.6, insertion order was preserved, but it was considered
+         an implementation detail at that time rather than a language guarantee.
 
 Callable types
    .. index::
@@ -973,6 +1005,9 @@ Internal types
       :attr:`f_lasti` gives the precise instruction (this is an index into the
       bytecode string of the code object).
 
+      Accessing ``f_code`` raises an :ref:`auditing event <auditing>`
+      ``object.__getattr__`` with arguments ``obj`` and ``"f_code"``.
+
       .. index::
          single: f_trace (frame attribute)
          single: f_trace_lines (frame attribute)
@@ -1056,6 +1091,9 @@ Internal types
       line number of its frame object if the exception occurred in a
       :keyword:`try` statement with no matching except clause or with a
       finally clause.
+
+      Accessing ``tb_frame`` raises an :ref:`auditing event <auditing>`
+      ``object.__getattr__`` with arguments ``obj`` and ``"tb_frame"``.
 
       .. index::
          single: tb_next (traceback attribute)
@@ -1167,7 +1205,7 @@ Basic customization
    as necessary before returning it.
 
    If :meth:`__new__` is invoked during object construction and it returns an
-   instance or subclass of *cls*, then the new instance’s :meth:`__init__` method
+   instance of *cls*, then the new instance’s :meth:`__init__` method
    will be invoked like ``__init__(self[, ...])``, where *self* is the new instance
    and the remaining arguments are the same as were passed to the object constructor.
 
@@ -1335,7 +1373,7 @@ Basic customization
 
    .. versionchanged:: 3.7
       ``object.__format__(x, '')`` is now equivalent to ``str(x)`` rather
-      than ``format(str(self), '')``.
+      than ``format(str(x), '')``.
 
 
 .. _richcmpfuncs:
@@ -1362,12 +1400,14 @@ Basic customization
    context (e.g., in the condition of an ``if`` statement), Python will call
    :func:`bool` on the value to determine if the result is true or false.
 
-   By default, :meth:`__ne__` delegates to :meth:`__eq__` and
-   inverts the result unless it is ``NotImplemented``.  There are no other
-   implied relationships among the comparison operators, for example,
-   the truth of ``(x<y or x==y)`` does not imply ``x<=y``.
-   To automatically generate ordering operations from a single root operation,
-   see :func:`functools.total_ordering`.
+   By default, ``object`` implements :meth:`__eq__` by using ``is``, returning
+   ``NotImplemented`` in the case of a false comparison:
+   ``True if x is y else NotImplemented``. For :meth:`__ne__`, by default it
+   delegates to :meth:`__eq__` and inverts the result unless it is
+   ``NotImplemented``.  There are no other implied relationships among the
+   comparison operators or default implementations; for example, the truth of
+   ``(x<y or x==y)`` does not imply ``x<=y``. To automatically generate ordering
+   operations from a single root operation, see :func:`functools.total_ordering`.
 
    See the paragraph on :meth:`__hash__` for
    some important notes on creating :term:`hashable` objects which support
@@ -1452,7 +1492,7 @@ Basic customization
 
       This is intended to provide protection against a denial-of-service caused
       by carefully-chosen inputs that exploit the worst case performance of a
-      dict insertion, O(n^2) complexity.  See
+      dict insertion, O(n\ :sup:`2`) complexity.  See
       http://www.ocert.org/advisories/ocert-2011-003.html for details.
 
       Changing hash values affects the iteration order of sets.
@@ -1525,6 +1565,12 @@ access (use of, assignment to, or deletion of ``x.name``) for class instances.
       result of implicit invocation via language syntax or built-in functions.
       See :ref:`special-lookup`.
 
+   .. audit-event:: object.__getattr__ obj,name object.__getattribute__
+
+      For certain sensitive attribute accesses, raises an
+      :ref:`auditing event <auditing>` ``object.__getattr__`` with arguments
+      ``obj`` and ``name``.
+
 
 .. method:: object.__setattr__(self, name, value)
 
@@ -1536,11 +1582,23 @@ access (use of, assignment to, or deletion of ``x.name``) for class instances.
    call the base class method with the same name, for example,
    ``object.__setattr__(self, name, value)``.
 
+   .. audit-event:: object.__setattr__ obj,name,value object.__setattr__
+
+      For certain sensitive attribute assignments, raises an
+      :ref:`auditing event <auditing>` ``object.__setattr__`` with arguments
+      ``obj``, ``name``, ``value``.
+
 
 .. method:: object.__delattr__(self, name)
 
    Like :meth:`__setattr__` but for attribute deletion instead of assignment.  This
    should only be implemented if ``del obj.name`` is meaningful for the object.
+
+   .. audit-event:: object.__delattr__ obj,name object.__delattr__
+
+      For certain sensitive attribute deletions, raises an
+      :ref:`auditing event <auditing>` ``object.__delattr__`` with arguments
+      ``obj`` and ``name``.
 
 
 .. method:: object.__dir__(self)
@@ -1721,7 +1779,7 @@ Super Binding
    immediately preceding ``B`` and then invokes the descriptor with the call:
    ``A.__dict__['m'].__get__(obj, obj.__class__)``.
 
-For instance bindings, the precedence of descriptor invocation depends on the
+For instance bindings, the precedence of descriptor invocation depends on
 which descriptor methods are defined.  A descriptor can define any combination
 of :meth:`__get__`, :meth:`__set__` and :meth:`__delete__`.  If it does not
 define :meth:`__get__`, then accessing the attribute will return the descriptor
@@ -1946,7 +2004,9 @@ Once the appropriate metaclass has been identified, then the class namespace
 is prepared. If the metaclass has a ``__prepare__`` attribute, it is called
 as ``namespace = metaclass.__prepare__(name, bases, **kwds)`` (where the
 additional keyword arguments, if any, come from the class definition). The
-``__prepare__`` method should be implemented as a :func:`classmethod`.
+``__prepare__`` method should be implemented as a :func:`classmethod`. The
+namespace returned by ``__prepare__`` is passed in to ``__new__``, but when
+the final class object is created the namespace is copied into a new ``dict``.
 
 If the metaclass has no ``__prepare__`` attribute, then the class namespace
 is initialised as an empty ordered mapping.
@@ -2084,22 +2144,142 @@ case the instance is itself a class.
 Emulating generic types
 -----------------------
 
-One can implement the generic class syntax as specified by :pep:`484`
-(for example ``List[int]``) by defining a special method:
+When using :term:`type annotations<annotation>`, it is often useful to
+*parameterize* a :term:`generic type` using Python's square-brackets notation.
+For example, the annotation ``list[int]`` might be used to signify a
+:class:`list` in which all the elements are of type :class:`int`.
+
+.. seealso::
+
+   :pep:`484` - Type Hints
+      Introducing Python's framework for type annotations
+
+   :ref:`Generic Alias Types<types-genericalias>`
+      Documentation for objects representing parameterized generic classes
+
+   :ref:`Generics`, :ref:`user-defined generics<user-defined-generics>` and :class:`typing.Generic`
+      Documentation on how to implement generic classes that can be
+      parameterized at runtime and understood by static type-checkers.
+
+A class can *generally* only be parameterized if it defines the special
+class method ``__class_getitem__()``.
 
 .. classmethod:: object.__class_getitem__(cls, key)
 
    Return an object representing the specialization of a generic class
    by type arguments found in *key*.
 
-This method is looked up on the class object itself, and when defined in
-the class body, this method is implicitly a class method.  Note, this
-mechanism is primarily reserved for use with static type hints, other usage
-is discouraged.
+   When defined on a class, ``__class_getitem__()`` is automatically a class
+   method. As such, there is no need for it to be decorated with
+   :func:`@classmethod<classmethod>` when it is defined.
+
+
+The purpose of *__class_getitem__*
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The purpose of :meth:`~object.__class_getitem__` is to allow runtime
+parameterization of standard-library generic classes in order to more easily
+apply :term:`type hints<type hint>` to these classes.
+
+To implement custom generic classes that can be parameterized at runtime and
+understood by static type-checkers, users should either inherit from a standard
+library class that already implements :meth:`~object.__class_getitem__`, or
+inherit from :class:`typing.Generic`, which has its own implementation of
+``__class_getitem__()``.
+
+Custom implementations of :meth:`~object.__class_getitem__` on classes defined
+outside of the standard library may not be understood by third-party
+type-checkers such as mypy. Using ``__class_getitem__()`` on any class for
+purposes other than type hinting is discouraged.
+
+
+.. _classgetitem-versus-getitem:
+
+
+*__class_getitem__* versus *__getitem__*
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Usually, the :ref:`subscription<subscriptions>` of an object using square
+brackets will call the :meth:`~object.__getitem__` instance method defined on
+the object's class. However, if the object being subscribed is itself a class,
+the class method :meth:`~object.__class_getitem__` may be called instead.
+``__class_getitem__()`` should return a :ref:`GenericAlias<types-genericalias>`
+object if it is properly defined.
+
+Presented with the :term:`expression` ``obj[x]``, the Python interpreter
+follows something like the following process to decide whether
+:meth:`~object.__getitem__` or :meth:`~object.__class_getitem__` should be
+called::
+
+   from inspect import isclass
+
+   def subscribe(obj, x):
+       """Return the result of the expression `obj[x]`"""
+
+       class_of_obj = type(obj)
+
+       # If the class of obj defines __getitem__,
+       # call class_of_obj.__getitem__(obj, x)
+       if hasattr(class_of_obj, '__getitem__'):
+           return class_of_obj.__getitem__(obj, x)
+
+       # Else, if obj is a class and defines __class_getitem__,
+       # call obj.__class_getitem__(x)
+       elif isclass(obj) and hasattr(obj, '__class_getitem__'):
+           return obj.__class_getitem__(x)
+
+       # Else, raise an exception
+       else:
+           raise TypeError(
+               f"'{class_of_obj.__name__}' object is not subscriptable"
+           )
+
+In Python, all classes are themselves instances of other classes. The class of
+a class is known as that class's :term:`metaclass`, and most classes have the
+:class:`type` class as their metaclass. :class:`type` does not define
+:meth:`~object.__getitem__`, meaning that expressions such as ``list[int]``,
+``dict[str, float]`` and ``tuple[str, bytes]`` all result in
+:meth:`~object.__class_getitem__` being called::
+
+   >>> # list has class "type" as its metaclass, like most classes:
+   >>> type(list)
+   <class 'type'>
+   >>> type(dict) == type(list) == type(tuple) == type(str) == type(bytes)
+   True
+   >>> # "list[int]" calls "list.__class_getitem__(int)"
+   >>> list[int]
+   list[int]
+   >>> # list.__class_getitem__ returns a GenericAlias object:
+   >>> type(list[int])
+   <class 'types.GenericAlias'>
+
+However, if a class has a custom metaclass that defines
+:meth:`~object.__getitem__`, subscribing the class may result in different
+behaviour. An example of this can be found in the :mod:`enum` module::
+
+   >>> from enum import Enum
+   >>> class Menu(Enum):
+   ...     """A breakfast menu"""
+   ...     SPAM = 'spam'
+   ...     BACON = 'bacon'
+   ...
+   >>> # Enum classes have a custom metaclass:
+   >>> type(Menu)
+   <class 'enum.EnumMeta'>
+   >>> # EnumMeta defines __getitem__,
+   >>> # so __class_getitem__ is not called,
+   >>> # and the result is not a GenericAlias object:
+   >>> Menu['SPAM']
+   <Menu.SPAM: 'spam'>
+   >>> type(Menu['SPAM'])
+   <enum 'Menu'>
+
 
 .. seealso::
-
-   :pep:`560` - Core support for typing module and generic types
+   :pep:`560` - Core Support for typing module and generic types
+      Introducing :meth:`~object.__class_getitem__`, and outlining when a
+      :ref:`subscription<subscriptions>` results in ``__class_getitem__()``
+      being called instead of :meth:`~object.__getitem__`
 
 
 .. _callable-types:
@@ -2113,7 +2293,7 @@ Emulating callable objects
    .. index:: pair: call; instance
 
    Called when the instance is "called" as a function; if this method is defined,
-   ``x(arg1, arg2, ...)`` is a shorthand for ``x.__call__(arg1, arg2, ...)``.
+   ``x(arg1, arg2, ...)`` roughly translates to ``type(x).__call__(x, arg1, ...)``.
 
 
 .. _sequence-types:
@@ -2199,19 +2379,27 @@ through the object's keys; for sequences, it should iterate through the values.
 
 .. method:: object.__getitem__(self, key)
 
-   Called to implement evaluation of ``self[key]``. For sequence types, the
-   accepted keys should be integers and slice objects.  Note that the special
-   interpretation of negative indexes (if the class wishes to emulate a sequence
-   type) is up to the :meth:`__getitem__` method. If *key* is of an inappropriate
-   type, :exc:`TypeError` may be raised; if of a value outside the set of indexes
-   for the sequence (after any special interpretation of negative values),
-   :exc:`IndexError` should be raised. For mapping types, if *key* is missing (not
-   in the container), :exc:`KeyError` should be raised.
+   Called to implement evaluation of ``self[key]``. For :term:`sequence` types,
+   the accepted keys should be integers and slice objects.  Note that the
+   special interpretation of negative indexes (if the class wishes to emulate a
+   :term:`sequence` type) is up to the :meth:`__getitem__` method. If *key* is
+   of an inappropriate type, :exc:`TypeError` may be raised; if of a value
+   outside the set of indexes for the sequence (after any special
+   interpretation of negative values), :exc:`IndexError` should be raised. For
+   :term:`mapping` types, if *key* is missing (not in the container),
+   :exc:`KeyError` should be raised.
 
    .. note::
 
-      :keyword:`for` loops expect that an :exc:`IndexError` will be raised for illegal
-      indexes to allow proper detection of the end of the sequence.
+      :keyword:`for` loops expect that an :exc:`IndexError` will be raised for
+      illegal indexes to allow proper detection of the end of the sequence.
+
+   .. note::
+
+      When :ref:`subscripting<subscriptions>` a *class*, the special
+      class method :meth:`~object.__class_getitem__` may be called instead of
+      ``__getitem__()``. See :ref:`classgetitem-versus-getitem` for more
+      details.
 
 
 .. method:: object.__setitem__(self, key, value)
@@ -2359,10 +2547,11 @@ left undefined.
 
    .. note::
 
-      If the right operand's type is a subclass of the left operand's type and that
-      subclass provides the reflected method for the operation, this method will be
-      called before the left operand's non-reflected method.  This behavior allows
-      subclasses to override their ancestors' operations.
+      If the right operand's type is a subclass of the left operand's type and
+      that subclass provides a different implementation of the reflected method
+      for the operation, this method will be called before the left operand's
+      non-reflected method. This behavior allows subclasses to override their
+      ancestors' operations.
 
 
 .. method:: object.__iadd__(self, other)
@@ -2391,6 +2580,13 @@ left undefined.
    certain situations, augmented assignment can result in unexpected errors (see
    :ref:`faq-augmented-assignment-tuple-error`), but this behavior is in fact
    part of the data model.
+
+   .. note::
+
+      Due to a bug in the dispatching mechanism for ``**=``, a class that
+      defines :meth:`__ipow__` but returns ``NotImplemented`` would fail to
+      fall back to ``x.__pow__(y)`` and ``y.__rpow__(x)``. This bug is fixed
+      in Python 3.10.
 
 
 .. method:: object.__neg__(self)
@@ -2444,8 +2640,8 @@ left undefined.
    return the value of the object truncated to an :class:`~numbers.Integral`
    (typically an :class:`int`).
 
-   If :meth:`__int__` is not defined then the built-in function :func:`int`
-   falls back to :meth:`__trunc__`.
+   The built-in function :func:`int` falls back to :meth:`__trunc__` if neither
+   :meth:`__int__` nor :meth:`__index__` is defined.
 
 
 .. _context-managers:
@@ -2584,7 +2780,7 @@ Awaitable Objects
 -----------------
 
 An :term:`awaitable` object generally implements an :meth:`__await__` method.
-:term:`Coroutine` objects returned from :keyword:`async def` functions
+:term:`Coroutine objects <coroutine>` returned from :keyword:`async def` functions
 are awaitable.
 
 .. note::
@@ -2609,7 +2805,7 @@ are awaitable.
 Coroutine Objects
 -----------------
 
-:term:`Coroutine` objects are :term:`awaitable` objects.
+:term:`Coroutine objects <coroutine>` are :term:`awaitable` objects.
 A coroutine's execution can be controlled by calling :meth:`__await__` and
 iterating over the result.  When the coroutine has finished executing and
 returns, the iterator raises :exc:`StopIteration`, and the exception's
@@ -2754,6 +2950,6 @@ An example of an asynchronous context manager class::
    method—that will instead have the opposite effect of explicitly
    *blocking* such fallback.
 
-.. [#] For operands of the same type, it is assumed that if the non-reflected method
-   (such as :meth:`__add__`) fails the operation is not supported, which is why the
-   reflected method is not called.
+.. [#] For operands of the same type, it is assumed that if the non-reflected
+   method -- such as :meth:`__add__` -- fails then the overall operation is not
+   supported, which is why the reflected method is not called.

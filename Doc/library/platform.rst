@@ -42,7 +42,7 @@ Cross Platform
 
    .. note::
 
-      On Mac OS X (and perhaps other platforms), executable files may be
+      On macOS (and perhaps other platforms), executable files may be
       universal files containing multiple architectures.
 
       To get at the "64-bitness" of the current interpreter, it is more
@@ -209,13 +209,6 @@ Windows Platform
    which means the OS version uses debugging code, i.e. code that checks arguments,
    ranges, etc.
 
-   .. note::
-
-      This function works best with Mark Hammond's
-      :mod:`win32all` package installed, but also on Python 2.3 and
-      later (support for this was added in Python 2.6). It obviously
-      only runs on Win32 compatible platforms.
-
 .. function:: win32_edition()
 
    Returns a string representing the current Windows edition.  Possible
@@ -232,13 +225,13 @@ Windows Platform
    .. versionadded:: 3.8
 
 
-Mac OS Platform
----------------
+macOS Platform
+--------------
 
 
 .. function:: mac_ver(release='', versioninfo=('','',''), machine='')
 
-   Get Mac OS version information and return it as tuple ``(release, versioninfo,
+   Get macOS version information and return it as tuple ``(release, versioninfo,
    machine)`` with *versioninfo* being a tuple ``(version, dev_stage,
    non_release_version)``.
 

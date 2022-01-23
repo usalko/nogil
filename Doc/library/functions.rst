@@ -43,9 +43,8 @@ are always available.  They are listed here in alphabetical order.
 .. function:: abs(x)
 
    Return the absolute value of a number.  The argument may be an
-   integer or a floating point number.  If the argument is a complex number, its
-   magnitude is returned. If *x* defines :meth:`__abs__`,
-   ``abs(x)`` returns ``x.__abs__()``.
+   integer, a floating point number, or an object implementing :meth:`__abs__`.
+   If the argument is a complex number, its magnitude is returned.
 
 
 .. function:: all(iterable)
@@ -151,8 +150,8 @@ are always available.  They are listed here in alphabetical order.
    * If it is an *integer*, the array will have that size and will be
      initialized with null bytes.
 
-   * If it is an object conforming to the *buffer* interface, a read-only buffer
-     of the object will be used to initialize the bytes array.
+   * If it is an object conforming to the :ref:`buffer interface <bufferobjects>`,
+     a read-only buffer of the object will be used to initialize the bytes array.
 
    * If it is an *iterable*, it must be an iterable of integers in the range
      ``0 <= x < 256``, which are used as the initial contents of the array.
@@ -246,26 +245,24 @@ are always available.  They are listed here in alphabetical order.
    interactive statement (in the latter case, expression statements that
    evaluate to something other than ``None`` will be printed).
 
-   The optional arguments *flags* and *dont_inherit* control which :ref:`future
-   statements <future>` affect the compilation of *source*.  If neither
-   is present (or both are zero) the code is compiled with those future
-   statements that are in effect in the code that is calling :func:`compile`.  If the
-   *flags* argument is given and *dont_inherit* is not (or is zero) then the
-   future statements specified by the *flags* argument are used in addition to
-   those that would be used anyway. If *dont_inherit* is a non-zero integer then
-   the *flags* argument is it -- the future statements in effect around the call
-   to compile are ignored.
+   The optional arguments *flags* and *dont_inherit* control which
+   :ref:`compiler options <ast-compiler-flags>` should be activated
+   and which :ref:`future features <future>` should be allowed. If neither
+   is present (or both are zero) the code is compiled with the same flags that
+   affect the code that is calling :func:`compile`. If the *flags*
+   argument is given and *dont_inherit* is not (or is zero) then the compiler
+   options and the future statements specified by the *flags* argument are used
+   in addition to those that would be used anyway. If *dont_inherit* is a
+   non-zero integer then the *flags* argument is it -- the flags (future
+   features and compiler options) in the surrounding code are ignored.
 
-   Future statements are specified by bits which can be bitwise ORed together to
-   specify multiple statements.  The bitfield required to specify a given feature
-   can be found as the :attr:`~__future__._Feature.compiler_flag` attribute on
-   the :class:`~__future__._Feature` instance in the :mod:`__future__` module.
-
-   The optional argument *flags* also controls whether the compiled source is
-   allowed to contain top-level ``await``, ``async for`` and ``async with``.
-   When the bit ``ast.PyCF_ALLOW_TOP_LEVEL_AWAIT`` is set, the return code
-   object has ``CO_COROUTINE`` set in ``co_code``, and can be interactively
-   executed via ``await eval(code_object)``.
+   Compiler options and future statements are specified by bits which can be
+   bitwise ORed together to specify multiple options. The bitfield required to
+   specify a given future feature can be found as the
+   :attr:`~__future__._Feature.compiler_flag` attribute on the
+   :class:`~__future__._Feature` instance in the :mod:`__future__` module.
+   :ref:`Compiler flags <ast-compiler-flags>` can be found in :mod:`ast`
+   module, with ``PyCF_`` prefix.
 
    The argument *optimize* specifies the optimization level of the compiler; the
    default value of ``-1`` selects the optimization level of the interpreter as
@@ -510,8 +507,9 @@ are always available.  They are listed here in alphabetical order.
    a suite of Python statements which is then executed (unless a syntax error
    occurs). [#]_ If it is a code object, it is simply executed.  In all cases,
    the code that's executed is expected to be valid as file input (see the
-   section "File input" in the Reference Manual). Be aware that the
-   :keyword:`return` and :keyword:`yield` statements may not be used outside of
+   section :ref:`file-input` in the Reference Manual). Be aware that the
+   :keyword:`nonlocal`, :keyword:`yield`,  and :keyword:`return`
+   statements may not be used outside of
    function definitions even within the context of code passed to the
    :func:`exec` function. The return value is ``None``.
 
@@ -583,7 +581,7 @@ are always available.  They are listed here in alphabetical order.
    input must conform to the following grammar after leading and trailing
    whitespace characters are removed:
 
-   .. productionlist::
+   .. productionlist:: float
       sign: "+" | "-"
       infinity: "Infinity" | "inf"
       nan: "nan"
@@ -678,6 +676,13 @@ are always available.  They are listed here in alphabetical order.
    ``x.foobar``.  If the named attribute does not exist, *default* is returned if
    provided, otherwise :exc:`AttributeError` is raised.
 
+   .. note::
+
+      Since :ref:`private name mangling <private-name-mangling>` happens at
+      compilation time, one must manually mangle a private attribute's
+      (attributes with two leading underscores) name in order to retrieve it with
+      :func:`getattr`.
+
 
 .. function:: globals()
 
@@ -769,6 +774,8 @@ are always available.  They are listed here in alphabetical order.
 
    .. impl-detail:: This is the address of the object in memory.
 
+   .. audit-event:: builtins.id id id
+
 
 .. function:: input([prompt])
 
@@ -855,8 +862,8 @@ are always available.  They are listed here in alphabetical order.
    Return ``True`` if *class* is a subclass (direct, indirect or :term:`virtual
    <abstract base class>`) of *classinfo*.  A
    class is considered a subclass of itself. *classinfo* may be a tuple of class
-   objects, in which case every entry in *classinfo* will be checked. In any other
-   case, a :exc:`TypeError` exception is raised.
+   objects, in which case return ``True`` if *class* is a subclass of any entry
+   in *classinfo*.  In any other case, a :exc:`TypeError` exception is raised.
 
 
 .. function:: iter(object[, sentinel])
@@ -957,7 +964,7 @@ are always available.  They are listed here in alphabetical order.
 
 
 .. _func-memoryview:
-.. class:: memoryview(obj)
+.. class:: memoryview(object)
    :noindex:
 
    Return a "memory view" object created from the given argument.  See
@@ -1042,7 +1049,8 @@ are always available.  They are listed here in alphabetical order.
 .. function:: open(file, mode='r', buffering=-1, encoding=None, errors=None, newline=None, closefd=True, opener=None)
 
    Open *file* and return a corresponding :term:`file object`.  If the file
-   cannot be opened, an :exc:`OSError` is raised.
+   cannot be opened, an :exc:`OSError` is raised. See
+   :ref:`tut-files` for more examples of how to use this function.
 
    *file* is a :term:`path-like object` giving the pathname (absolute or
    relative to the current working directory) of the file to be opened or an
@@ -1090,6 +1098,12 @@ are always available.  They are listed here in alphabetical order.
    first decoded using a platform-dependent encoding or using the specified
    *encoding* if given.
 
+   There is an additional mode character permitted, ``'U'``, which no longer
+   has any effect, and is considered deprecated. It previously enabled
+   :term:`universal newlines` in text mode, which became the default behaviour
+   in Python 3.0. Refer to the documentation of the
+   :ref:`newline <open-newline-parameter>` parameter for further details.
+
    .. note::
 
       Python doesn't depend on the underlying operating system's notion of text
@@ -1136,9 +1150,9 @@ are always available.  They are listed here in alphabetical order.
    * ``'replace'`` causes a replacement marker (such as ``'?'``) to be inserted
      where there is malformed data.
 
-   * ``'surrogateescape'`` will represent any incorrect bytes as code
-     points in the Unicode Private Use Area ranging from U+DC80 to
-     U+DCFF.  These private code points will then be turned back into
+   * ``'surrogateescape'`` will represent any incorrect bytes as low
+     surrogate code units ranging from U+DC80 to U+DCFF.
+     These surrogate code units will then be turned back into
      the same bytes when the ``surrogateescape`` error handler is used
      when writing data.  This is useful for processing files in an
      unknown encoding.
@@ -1246,6 +1260,10 @@ are always available.  They are listed here in alphabetical order.
 
          * The file is now non-inheritable.
 
+   .. deprecated-removed:: 3.4 3.10
+
+      The ``'U'`` mode.
+
    .. versionchanged::
       3.5
 
@@ -1260,10 +1278,6 @@ are always available.  They are listed here in alphabetical order.
          * Support added to accept objects implementing :class:`os.PathLike`.
          * On Windows, opening a console buffer may return a subclass of
            :class:`io.RawIOBase` other than :class:`io.FileIO`.
-
-   .. versionchanged:: 3.9
-      The ``'U'`` mode has been removed.
-
 
 .. function:: ord(c)
 
@@ -1284,8 +1298,11 @@ are always available.  They are listed here in alphabetical order.
    coercion rules for binary arithmetic operators apply.  For :class:`int`
    operands, the result has the same type as the operands (after coercion)
    unless the second argument is negative; in that case, all arguments are
-   converted to float and a float result is delivered.  For example, ``10**2``
-   returns ``100``, but ``10**-2`` returns ``0.01``.
+   converted to float and a float result is delivered.  For example, ``pow(10, 2)``
+   returns ``100``, but ``pow(10, -2)`` returns ``0.01``.  For a negative base of
+   type :class:`int` or :class:`float` and a non-integral exponent, a complex
+   result is delivered.  For example, ``pow(-9, 0.5)`` returns a value close
+   to ``3j``.
 
    For :class:`int` operands *base* and *exp*, if *mod* is present, *mod* must
    also be of integer type and *mod* must be nonzero. If *mod* is present and
@@ -1305,7 +1322,7 @@ are always available.  They are listed here in alphabetical order.
       the second argument to be negative, permitting computation of modular
       inverses.
 
-   .. versionchanged:: 3.9
+   .. versionchanged:: 3.8
       Allow keyword arguments.  Formerly, only positional arguments were
       supported.
 
@@ -1488,18 +1505,23 @@ are always available.  They are listed here in alphabetical order.
    object allows it.  For example, ``setattr(x, 'foobar', 123)`` is equivalent to
    ``x.foobar = 123``.
 
+   .. note::
+
+      Since :ref:`private name mangling <private-name-mangling>` happens at
+      compilation time, one must manually mangle a private attribute's
+      (attributes with two leading underscores) name in order to set it with
+      :func:`setattr`.
+
 
 .. class:: slice(stop)
            slice(start, stop[, step])
-
-   .. index:: single: Numerical Python
 
    Return a :term:`slice` object representing the set of indices specified by
    ``range(start, stop, step)``.  The *start* and *step* arguments default to
    ``None``.  Slice objects have read-only data attributes :attr:`~slice.start`,
    :attr:`~slice.stop` and :attr:`~slice.step` which merely return the argument
    values (or their default).  They have no other explicit functionality;
-   however they are used by Numerical Python and other third party extensions.
+   however they are used by NumPy and other third party packages.
    Slice objects are also generated when extended indexing syntax is used.  For
    example: ``a[start:stop:step]`` or ``a[start:stop, i]``.  See
    :func:`itertools.islice` for an alternate version that returns an iterator.
@@ -1525,6 +1547,15 @@ are always available.  They are listed here in alphabetical order.
    stable if it guarantees not to change the relative order of elements that
    compare equal --- this is helpful for sorting in multiple passes (for
    example, sort by department, then by salary grade).
+
+   The sort algorithm uses only ``<`` comparisons between items.  While
+   defining an :meth:`~object.__lt__` method will suffice for sorting,
+   :PEP:`8` recommends that all six :ref:`rich comparisons
+   <comparisons>` be implemented.  This will help avoid bugs when using
+   the same data with other ordering tools such as :func:`max` that rely
+   on a different underlying method.  Implementing all six comparisons
+   also helps avoid confusion for mixed type comparisons which can call
+   reflected the :meth:`~object.__gt__` method.
 
    For sorting examples and a brief sorting tutorial, see :ref:`sortinghowto`.
 
@@ -1624,7 +1655,7 @@ are always available.  They are listed here in alphabetical order.
    not found in statically compiled languages or languages that only support
    single inheritance.  This makes it possible to implement "diamond diagrams"
    where multiple base classes implement the same method.  Good design dictates
-   that this method have the same calling signature in every case (because the
+   that such implementations have the same calling signature in every case (because the
    order of calls is determined at runtime, because that order adapts
    to changes in the class hierarchy, and because that order can include
    sibling classes that are unknown prior to runtime).
@@ -1668,7 +1699,7 @@ are always available.  They are listed here in alphabetical order.
 
 
 .. class:: type(object)
-           type(name, bases, dict)
+           type(name, bases, dict, **kwds)
 
    .. index:: object: type
 
@@ -1681,20 +1712,28 @@ are always available.  They are listed here in alphabetical order.
 
 
    With three arguments, return a new type object.  This is essentially a
-   dynamic form of the :keyword:`class` statement. The *name* string is the
-   class name and becomes the :attr:`~definition.__name__` attribute; the *bases*
-   tuple itemizes the base classes and becomes the :attr:`~class.__bases__`
-   attribute; and the *dict* dictionary is the namespace containing definitions
-   for class body and is copied to a standard dictionary to become the
-   :attr:`~object.__dict__` attribute.  For example, the following two
-   statements create identical :class:`type` objects:
+   dynamic form of the :keyword:`class` statement. The *name* string is
+   the class name and becomes the :attr:`~definition.__name__` attribute.
+   The *bases* tuple contains the base classes and becomes the
+   :attr:`~class.__bases__` attribute; if empty, :class:`object`, the
+   ultimate base of all classes, is added.  The *dict* dictionary contains
+   attribute and method definitions for the class body; it may be copied
+   or wrapped before becoming the :attr:`~object.__dict__` attribute.
+   The following two statements create identical :class:`type` objects:
 
       >>> class X:
       ...     a = 1
       ...
-      >>> X = type('X', (object,), dict(a=1))
+      >>> X = type('X', (), dict(a=1))
 
    See also :ref:`bltin-type-objects`.
+
+   Keyword arguments provided to the three argument form are passed to the
+   appropriate metaclass machinery (usually :meth:`~object.__init_subclass__`)
+   in the same way that keywords in a class
+   definition (besides *metaclass*) would.
+
+   See also :ref:`class-customization`.
 
    .. versionchanged:: 3.6
       Subclasses of :class:`type` which don't override ``type.__new__`` may no
@@ -1714,6 +1753,9 @@ are always available.  They are listed here in alphabetical order.
    locals dictionary is only useful for reads since updates to the locals
    dictionary are ignored.
 
+   A :exc:`TypeError` exception is raised if an object is specified but
+   it doesn't have a :attr:`~object.__dict__` attribute (for example, if
+   its class defines the :attr:`~object.__slots__` attribute).
 
 .. function:: zip(*iterables)
 
@@ -1829,6 +1871,9 @@ are always available.  They are listed here in alphabetical order.
       Negative values for *level* are no longer supported (which also changes
       the default value to 0).
 
+   .. versionchanged:: 3.9
+      When the command line options :option:`-E` or :option:`-I` are being used,
+      the environment variable :envvar:`PYTHONCASEOK` is now ignored.
 
 .. rubric:: Footnotes
 

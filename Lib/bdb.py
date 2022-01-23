@@ -117,7 +117,7 @@ class Bdb:
         """Invoke user function and return trace function for call event.
 
         If the debugger stops on this function call, invoke
-        self.user_call(). Raise BbdQuit if self.quitting is set.
+        self.user_call(). Raise BdbQuit if self.quitting is set.
         Return self.trace_dispatch to continue tracing in this scope.
         """
         # XXX 'arg' is no longer used
@@ -548,14 +548,7 @@ class Bdb:
             s += frame.f_code.co_name
         else:
             s += "<lambda>"
-        if '__args__' in frame.f_locals:
-            args = frame.f_locals['__args__']
-        else:
-            args = None
-        if args:
-            s += reprlib.repr(args)
-        else:
-            s += '()'
+        s += '()'
         if '__return__' in frame.f_locals:
             rv = frame.f_locals['__return__']
             s += '->'

@@ -105,7 +105,8 @@ def stderr_to_parser_error(parse_args, *args, **kwargs):
             code = sys.exc_info()[1].code
             stdout = sys.stdout.getvalue()
             stderr = sys.stderr.getvalue()
-            raise ArgumentParserError("SystemExit", stdout, stderr, code)
+            raise ArgumentParserError(
+                "SystemExit", stdout, stderr, code) from None
     finally:
         sys.stdout = old_stdout
         sys.stderr = old_stderr
@@ -699,6 +700,14 @@ class TestBooleanOptionalAction(ParserTestCase):
         ('--no-foo --foo', NS(foo=True)),
     ]
 
+    def test_const(self):
+        # See bpo-40862
+        parser = argparse.ArgumentParser()
+        with self.assertRaises(TypeError) as cm:
+            parser.add_argument('--foo', const=True, action=argparse.BooleanOptionalAction)
+
+        self.assertIn("got an unexpected keyword argument 'const'", str(cm.exception))
+
 class TestBooleanOptionalActionRequired(ParserTestCase):
     """Tests BooleanOptionalAction required"""
 
@@ -810,6 +819,23 @@ class TestOptionalsDisallowLongAbbreviation(ParserTestCase):
     ]
 
 
+class TestOptionalsDisallowLongAbbreviationPrefixChars(ParserTestCase):
+    """Disallowing abbreviations works with alternative prefix characters"""
+
+    parser_signature = Sig(prefix_chars='+', allow_abbrev=False)
+    argument_signatures = [
+        Sig('++foo'),
+        Sig('++foodle', action='store_true'),
+        Sig('++foonly'),
+    ]
+    failures = ['+foon 3', '++foon 3', '++food', '++food ++foo 2']
+    successes = [
+        ('', NS(foo=None, foodle=False, foonly=None)),
+        ('++foo 3', NS(foo='3', foodle=False, foonly=None)),
+        ('++foonly 7 ++foodle ++foo 2', NS(foo='2', foodle=True, foonly='7')),
+    ]
+
+
 class TestDisallowLongAbbreviationAllowsShortGrouping(ParserTestCase):
     """Do not allow abbreviations of long options at all"""
 
@@ -827,6 +853,26 @@ class TestDisallowLongAbbreviationAllowsShortGrouping(ParserTestCase):
         ('-cc -ra', NS(r='a', c=2)),
         ('-ccrcc', NS(r='cc', c=2)),
     ]
+
+
+class TestDisallowLongAbbreviationAllowsShortGroupingPrefix(ParserTestCase):
+    """Short option grouping works with custom prefix and allow_abbrev=False"""
+
+    parser_signature = Sig(prefix_chars='+', allow_abbrev=False)
+    argument_signatures = [
+        Sig('+r'),
+        Sig('+c', action='count'),
+    ]
+    failures = ['+r', '+c +r']
+    successes = [
+        ('', NS(r=None, c=None)),
+        ('+ra', NS(r='a', c=None)),
+        ('+rcc', NS(r='cc', c=None)),
+        ('+cc', NS(r=None, c=2)),
+        ('+cc +ra', NS(r='a', c=2)),
+        ('+ccrcc', NS(r='cc', c=2)),
+    ]
+
 
 # ================
 # Positional tests
@@ -2011,6 +2057,30 @@ class TestAddSubparsers(TestCase):
         ret = parser.parse_args(())
         self.assertIsNone(ret.command)
 
+    def test_required_subparsers_no_destination_error(self):
+        parser = ErrorRaisingArgumentParser()
+        subparsers = parser.add_subparsers(required=True)
+        subparsers.add_parser('foo')
+        subparsers.add_parser('bar')
+        with self.assertRaises(ArgumentParserError) as excinfo:
+            parser.parse_args(())
+        self.assertRegex(
+            excinfo.exception.stderr,
+            'error: the following arguments are required: {foo,bar}\n$'
+        )
+
+    def test_wrong_argument_subparsers_no_destination_error(self):
+        parser = ErrorRaisingArgumentParser()
+        subparsers = parser.add_subparsers(required=True)
+        subparsers.add_parser('foo')
+        subparsers.add_parser('bar')
+        with self.assertRaises(ArgumentParserError) as excinfo:
+            parser.parse_args(('baz',))
+        self.assertRegex(
+            excinfo.exception.stderr,
+            r"error: argument {foo,bar}: invalid choice: 'baz' \(choose from 'foo', 'bar'\)\n$"
+        )
+
     def test_optional_subparsers(self):
         parser = ErrorRaisingArgumentParser()
         subparsers = parser.add_subparsers(dest='command', required=False)
@@ -2071,6 +2141,44 @@ class TestAddSubparsers(TestCase):
               -h, --help      show this help message and exit
               --non-breaking  help message containing non-breaking spaces shall not
                               wrap\N{NO-BREAK SPACE}at non-breaking spaces
+        '''))
+
+    def test_help_blank(self):
+        # Issue 24444
+        parser = ErrorRaisingArgumentParser(
+            prog='PROG', description='main description')
+        parser.add_argument(
+            'foo',
+            help='    ')
+        self.assertEqual(parser.format_help(), textwrap.dedent('''\
+            usage: PROG [-h] foo
+
+            main description
+
+            positional arguments:
+              foo         \
+
+
+            optional arguments:
+              -h, --help  show this help message and exit
+        '''))
+
+        parser = ErrorRaisingArgumentParser(
+            prog='PROG', description='main description')
+        parser.add_argument(
+            'foo', choices=[],
+            help='%(choices)s')
+        self.assertEqual(parser.format_help(), textwrap.dedent('''\
+            usage: PROG [-h] {}
+
+            main description
+
+            positional arguments:
+              {}          \
+
+
+            optional arguments:
+              -h, --help  show this help message and exit
         '''))
 
     def test_help_alternate_prefix_chars(self):
@@ -4189,6 +4297,9 @@ class TestHelpArgumentDefaults(HelpTestCase):
     argument_signatures = [
         Sig('--foo', help='foo help - oh and by the way, %(default)s'),
         Sig('--bar', action='store_true', help='bar help'),
+        Sig('--taz', action=argparse.BooleanOptionalAction,
+            help='Whether to taz it', default=True),
+        Sig('--quux', help="Set the quux", default=42),
         Sig('spam', help='spam help'),
         Sig('badger', nargs='?', default='wooden', help='badger help'),
     ]
@@ -4197,25 +4308,29 @@ class TestHelpArgumentDefaults(HelpTestCase):
          [Sig('--baz', type=int, default=42, help='baz help')]),
     ]
     usage = '''\
-        usage: PROG [-h] [--foo FOO] [--bar] [--baz BAZ] spam [badger]
+        usage: PROG [-h] [--foo FOO] [--bar] [--taz | --no-taz] [--quux QUUX]
+                    [--baz BAZ]
+                    spam [badger]
         '''
     help = usage + '''\
 
         description
 
         positional arguments:
-          spam        spam help
-          badger      badger help (default: wooden)
+          spam             spam help
+          badger           badger help (default: wooden)
 
         optional arguments:
-          -h, --help  show this help message and exit
-          --foo FOO   foo help - oh and by the way, None
-          --bar       bar help (default: False)
+          -h, --help       show this help message and exit
+          --foo FOO        foo help - oh and by the way, None
+          --bar            bar help (default: False)
+          --taz, --no-taz  Whether to taz it (default: True)
+          --quux QUUX      Set the quux (default: 42)
 
         title:
           description
 
-          --baz BAZ   baz help (default: 42)
+          --baz BAZ        baz help (default: 42)
         '''
     version = ''
 
@@ -4687,7 +4802,7 @@ class TestStrings(TestCase):
 
     def test_namespace(self):
         ns = argparse.Namespace(foo=42, bar='spam')
-        string = "Namespace(bar='spam', foo=42)"
+        string = "Namespace(foo=42, bar='spam')"
         self.assertStringEqual(ns, string)
 
     def test_namespace_starkwargs_notidentifier(self):
@@ -5311,13 +5426,11 @@ class TestExitOnError(TestCase):
             self.parser.parse_args('--integers a'.split())
 
 
-def test_main():
-    support.run_unittest(__name__)
+def tearDownModule():
     # Remove global references to avoid looking like we have refleaks.
     RFile.seen = {}
     WFile.seen = set()
 
 
-
 if __name__ == '__main__':
-    test_main()
+    unittest.main()

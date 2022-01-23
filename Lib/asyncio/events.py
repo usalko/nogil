@@ -19,7 +19,6 @@ import sys
 import threading
 
 from . import format_helpers
-from . import exceptions
 
 
 class Handle:
@@ -284,7 +283,7 @@ class AbstractEventLoop:
     def call_soon_threadsafe(self, callback, *args):
         raise NotImplementedError
 
-    async def run_in_executor(self, executor, func, *args):
+    def run_in_executor(self, executor, func, *args):
         raise NotImplementedError
 
     def set_default_executor(self, executor):
@@ -397,7 +396,7 @@ class AbstractEventLoop:
         The return value is a Server object, which can be used to stop
         the service.
 
-        path is a str, representing a file systsem path to bind the
+        path is a str, representing a file system path to bind the
         server socket to.
 
         sock can optionally be specified in order to use a preexisting
@@ -466,7 +465,7 @@ class AbstractEventLoop:
         # The reason to accept file-like object instead of just file descriptor
         # is: we need to own pipe and close it at transport finishing
         # Can got complicated errors if pass f.fileno(),
-        # close fd in pipe transport then close f and vise versa.
+        # close fd in pipe transport then close f and vice versa.
         raise NotImplementedError
 
     async def connect_write_pipe(self, protocol_factory, pipe):
@@ -479,7 +478,7 @@ class AbstractEventLoop:
         # The reason to accept file-like object instead of just file descriptor
         # is: we need to own pipe and close it at transport finishing
         # Can got complicated errors if pass f.fileno(),
-        # close fd in pipe transport then close f and vise versa.
+        # close fd in pipe transport then close f and vice versa.
         raise NotImplementedError
 
     async def subprocess_shell(self, protocol_factory, cmd, *,

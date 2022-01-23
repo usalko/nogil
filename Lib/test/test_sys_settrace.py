@@ -165,7 +165,6 @@ def test_raise():
         pass
 
 test_raise.events = [(0, 'call'),
-                     (1, 'line'),
                      (2, 'line'),
                      (-3, 'call'),
                      (-2, 'line'),
@@ -235,11 +234,13 @@ def tightloop_example():
 
 tightloop_example.events = [(0, 'call'),
                             (1, 'line'),
-                            (2, 'line'),
                             (3, 'line'),
                             (5, 'line'),
+                            (4, 'line'),
                             (5, 'line'),
+                            (4, 'line'),
                             (5, 'line'),
+                            (4, 'line'),
                             (5, 'line'),
                             (5, 'exception'),
                             (6, 'line'),
@@ -256,7 +257,6 @@ def tighterloop_example():
 
 tighterloop_example.events = [(0, 'call'),
                             (1, 'line'),
-                            (2, 'line'),
                             (3, 'line'),
                             (4, 'line'),
                             (4, 'line'),
@@ -284,7 +284,6 @@ def generator_example():
 generator_example.events = ([(0, 'call'),
                              (2, 'line'),
                              (-6, 'call'),
-                             (-5, 'line'),
                              (-4, 'line'),
                              (-4, 'return'),
                              (-4, 'call'),
@@ -495,8 +494,6 @@ class TraceTestCase(unittest.TestCase):
 
         self.run_and_compare(func,
             [(0, 'call'),
-             (1, 'line'),
-             (2, 'line'),
              (3, 'line'),
              (3, 'exception'),
              (4, 'line'),
@@ -517,8 +514,6 @@ class TraceTestCase(unittest.TestCase):
 
         self.run_and_compare(func,
             [(0, 'call'),
-             (1, 'line'),
-             (2, 'line'),
              (3, 'line'),
              (3, 'exception'),
              (5, 'line'),
@@ -564,28 +559,24 @@ class TraceTestCase(unittest.TestCase):
                 (-8, 'line'),
                 (-8, 'return'),
                 (-6, 'call'),
-                (-5, 'line'),
                 (-4, 'line'),
                 (-4, 'return'),
                 (1, 'exception'),
                 (2, 'line'),
                 (1, 'line'),
                 (-6, 'call'),
-                (-5, 'line'),
                 (-4, 'line'),
                 (-4, 'return'),
                 (1, 'exception'),
                 (2, 'line'),
                 (1, 'line'),
                 (-6, 'call'),
-                (-5, 'line'),
                 (-4, 'line'),
                 (-4, 'return'),
                 (1, 'exception'),
                 (2, 'line'),
                 (1, 'line'),
                 (-6, 'call'),
-                (-5, 'line'),
                 (-4, 'line'),
                 (-4, 'exception'),
                 (-3, 'line'),
@@ -600,6 +591,50 @@ class TraceTestCase(unittest.TestCase):
         except Exception:
             pass
         self.compare_events(doit_async.__code__.co_firstlineno,
+                            tracer.events, events)
+
+    def test_21_async_for_else(self):
+
+        async def async_gen():
+            yield -2
+
+        async def async_test():
+            global a
+            a = 2
+            async for i in async_gen():
+                a = 4
+            else:
+                a = 6
+
+        def run(tracer):
+            x = async_test()
+            try:
+                sys.settrace(tracer)
+                x.send(None)
+            finally:
+                sys.settrace(None)
+
+        tracer = self.make_tracer()
+        events = [
+                (0, 'call'),
+                (2, 'line'),
+                (3, 'line'),
+                (-3, 'call'),
+                (-2, 'line'),
+                (-2, 'return'),
+                (3, 'exception'),
+                (4, 'line'),
+                (3, 'line'),
+                (-2, 'call'),
+                (-2, 'return'),
+                (3, 'exception'),
+                (6, 'line'),
+                (6, 'return')]
+        try:
+            run(tracer.trace)
+        except Exception:
+            pass
+        self.compare_events(async_test.__code__.co_firstlineno,
                             tracer.events, events)
 
 
@@ -787,6 +822,7 @@ def no_jump_without_trace_function():
         raise AssertionError("Trace-function-less jump failed to fail")
 
 
+@unittest.skip('FIXME(sgross): jump tests')
 class JumpTestCase(unittest.TestCase):
     def setUp(self):
         self.addCleanup(sys.settrace, sys.gettrace())
@@ -948,8 +984,8 @@ class JumpTestCase(unittest.TestCase):
             output.append(11)
         output.append(12)
 
-    @jump_test(5, 11, [2, 4, 12])
-    def test_jump_over_return_try_finally_in_finally_block(output):
+    @jump_test(5, 11, [2, 4], (ValueError, 'unreachable'))
+    def test_no_jump_over_return_try_finally_in_finally_block(output):
         try:
             output.append(2)
         finally:
@@ -963,8 +999,8 @@ class JumpTestCase(unittest.TestCase):
             pass
         output.append(12)
 
-    @jump_test(3, 4, [1, 4])
-    def test_jump_infinite_while_loop(output):
+    @jump_test(3, 4, [1], (ValueError, 'unreachable'))
+    def test_no_jump_infinite_while_loop(output):
         output.append(1)
         while True:
             output.append(3)
@@ -1357,16 +1393,16 @@ class JumpTestCase(unittest.TestCase):
             output.append(7)
         output.append(8)
 
-    @jump_test(1, 5, [], (ValueError, "into a 'finally'"))
-    def test_no_jump_into_finally_block(output):
+    @jump_test(1, 5, [5])
+    def test_jump_into_finally_block(output):
         output.append(1)
         try:
             output.append(3)
         finally:
             output.append(5)
 
-    @jump_test(3, 6, [2, 5, 6], (ValueError, "into a 'finally'"))
-    def test_no_jump_into_finally_block_from_try_block(output):
+    @jump_test(3, 6, [2, 6, 7])
+    def test_jump_into_finally_block_from_try_block(output):
         try:
             output.append(2)
             output.append(3)
@@ -1375,8 +1411,8 @@ class JumpTestCase(unittest.TestCase):
             output.append(6)
         output.append(7)
 
-    @jump_test(5, 1, [1, 3], (ValueError, "out of a 'finally'"))
-    def test_no_jump_out_of_finally_block(output):
+    @jump_test(5, 1, [1, 3, 1, 3, 5])
+    def test_jump_out_of_finally_block(output):
         output.append(1)
         try:
             output.append(3)
@@ -1441,23 +1477,23 @@ class JumpTestCase(unittest.TestCase):
             output.append(6)
             output.append(7)
 
-    @jump_test(3, 5, [1, 2, -2], (ValueError, 'into'))
-    def test_no_jump_between_with_blocks(output):
+    @jump_test(3, 5, [1, 2, 5, -2])
+    def test_jump_between_with_blocks(output):
         output.append(1)
         with tracecontext(output, 2):
             output.append(3)
         with tracecontext(output, 4):
             output.append(5)
 
-    @async_jump_test(3, 5, [1, 2, -2], (ValueError, 'into'))
-    async def test_no_jump_between_async_with_blocks(output):
+    @async_jump_test(3, 5, [1, 2, 5, -2])
+    async def test_jump_between_async_with_blocks(output):
         output.append(1)
         async with asynctracecontext(output, 2):
             output.append(3)
         async with asynctracecontext(output, 4):
             output.append(5)
 
-    @jump_test(5, 7, [2, 4], (ValueError, 'finally'))
+    @jump_test(5, 7, [2, 4], (ValueError, "unreachable"))
     def test_no_jump_over_return_out_of_finally_block(output):
         try:
             output.append(2)
@@ -1551,9 +1587,8 @@ output.append(4)
         output.append(1)
         1 / 0
 
-    @jump_test(3, 2, [2], event='return', error=(ValueError,
-               "can't jump from a 'yield' statement"))
-    def test_no_jump_from_yield(output):
+    @jump_test(3, 2, [2, 5], event='return')
+    def test_jump_from_yield(output):
         def gen():
             output.append(2)
             yield 3

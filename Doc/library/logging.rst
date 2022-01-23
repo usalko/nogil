@@ -159,6 +159,7 @@ is the module's name in the Python package namespace.
       message format string, and the *args* are the arguments which are merged into
       *msg* using the string formatting operator. (Note that this means that you can
       use keywords in the format string, together with a single dictionary argument.)
+      No % formatting operation is performed on *msg* when no *args* are supplied.
 
       There are four keyword arguments in *kwargs* which are inspected:
       *exc_info*, *stack_info*, *stacklevel* and *extra*.
@@ -202,7 +203,7 @@ is the module's name in the Python package namespace.
       attributes can then be used as you like. For example, they could be
       incorporated into logged messages. For example::
 
-         FORMAT = '%(asctime)-15s %(clientip)s %(user)-8s %(message)s'
+         FORMAT = '%(asctime)s %(clientip)-15s %(user)-8s %(message)s'
          logging.basicConfig(format=FORMAT)
          d = {'clientip': '192.168.0.1', 'user': 'fbloggs'}
          logger = logging.getLogger('tcpserver')
@@ -607,6 +608,9 @@ The useful mapping keys in a :class:`LogRecord` are given in the section on
          attributes are ``default_time_format`` (for the strptime format string)
          and ``default_msec_format`` (for appending the millisecond value).
 
+      .. versionchanged:: 3.9
+         The ``default_msec_format`` can be ``None``.
+
    .. method:: formatException(exc_info)
 
       Formats the specified exception information (a standard exception tuple as
@@ -889,6 +893,10 @@ interchangeably.
    :meth:`~Logger.setLevel` and :meth:`~Logger.hasHandlers` methods were added
    to :class:`LoggerAdapter`.  These methods delegate to the underlying logger.
 
+.. versionchanged:: 3.6
+   Attribute :attr:`manager` and method :meth:`_log` were added, which
+   delegate to the underlying logger and allow adapters to be nested.
+
 
 Thread Safety
 -------------
@@ -985,7 +993,7 @@ functions.
    be used as you like. For example, they could be incorporated into logged
    messages. For example::
 
-      FORMAT = '%(asctime)-15s %(clientip)s %(user)-8s %(message)s'
+      FORMAT = '%(asctime)s %(clientip)-15s %(user)-8s %(message)s'
       logging.basicConfig(format=FORMAT)
       d = {'clientip': '192.168.0.1', 'user': 'fbloggs'}
       logging.warning('Protocol problem: %s', 'connection reset', extra=d)
@@ -1085,8 +1093,8 @@ functions.
    suitable value.
 
    .. versionchanged:: 3.7
-      The *level* parameter was defaulted to level ``CRITICAL``. See Issue
-      #28524 for more information about this change.
+      The *level* parameter was defaulted to level ``CRITICAL``. See
+      :issue:`28524` for more information about this change.
 
 .. function:: addLevelName(level, levelName)
 
@@ -1102,18 +1110,27 @@ functions.
 
 .. function:: getLevelName(level)
 
-   Returns the textual representation of logging level *level*. If the level is one
-   of the predefined levels :const:`CRITICAL`, :const:`ERROR`, :const:`WARNING`,
-   :const:`INFO` or :const:`DEBUG` then you get the corresponding string. If you
-   have associated levels with names using :func:`addLevelName` then the name you
-   have associated with *level* is returned. If a numeric value corresponding to one
-   of the defined levels is passed in, the corresponding string representation is
-   returned. Otherwise, the string 'Level %s' % level is returned.
+   Returns the textual or numeric representation of logging level *level*.
+
+   If *level* is one of the predefined levels :const:`CRITICAL`, :const:`ERROR`,
+   :const:`WARNING`, :const:`INFO` or :const:`DEBUG` then you get the
+   corresponding string. If you have associated levels with names using
+   :func:`addLevelName` then the name you have associated with *level* is
+   returned. If a numeric value corresponding to one of the defined levels is
+   passed in, the corresponding string representation is returned.
+
+   The *level* parameter also accepts a string representation of the level such
+   as 'INFO'. In such cases, this functions returns the corresponding numeric
+   value of the level.
+
+   If no matching numeric or string value is passed in, the string
+   'Level %s' % level is returned.
 
    .. note:: Levels are internally integers (as they need to be compared in the
       logging logic). This function is used to convert between an integer level
       and the level name displayed in the formatted log output by means of the
-      ``%(levelname)s`` format specifier (see :ref:`logrecord-attributes`).
+      ``%(levelname)s`` format specifier (see :ref:`logrecord-attributes`), and
+      vice versa.
 
    .. versionchanged:: 3.4
       In Python versions earlier than 3.4, this function could also be passed a
@@ -1163,7 +1180,9 @@ functions.
    |              | to ``'a'``.                                 |
    +--------------+---------------------------------------------+
    | *format*     | Use the specified format string for the     |
-   |              | handler.                                    |
+   |              | handler. Defaults to attributes             |
+   |              | ``levelname``, ``name`` and ``message``     |
+   |              | separated by colons.                        |
    +--------------+---------------------------------------------+
    | *datefmt*    | Use the specified date/time format, as      |
    |              | accepted by :func:`time.strftime`.          |
@@ -1329,7 +1348,7 @@ with the :mod:`warnings` module.
       The proposal which described this feature for inclusion in the Python standard
       library.
 
-   `Original Python logging package <https://www.red-dove.com/python_logging.html>`_
+   `Original Python logging package <https://old.red-dove.com/python_logging.html>`_
       This is the original source for the :mod:`logging` package.  The version of the
       package available from this site is suitable for use with Python 1.5.2, 2.1.x
       and 2.2.x, which do not include the :mod:`logging` package in the standard

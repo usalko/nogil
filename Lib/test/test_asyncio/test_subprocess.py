@@ -227,7 +227,7 @@ class SubprocessMixin:
         # buffer large enough to feed the whole pipe buffer
         large_data = b'x' * support.PIPE_MAX_SIZE
 
-        # the program ends before the stdin can be feeded
+        # the program ends before the stdin can be fed
         proc = self.loop.run_until_complete(
             asyncio.create_subprocess_exec(
                 sys.executable, '-c', 'pass',
@@ -477,12 +477,19 @@ class SubprocessMixin:
             proc.kill = kill
             returncode = transport.get_returncode()
             transport.close()
-            await transport._wait()
+            await asyncio.wait_for(transport._wait(), 5)
             return (returncode, kill_called)
 
         # Ignore "Close running child process: kill ..." log
         with test_utils.disable_logger():
-            returncode, killed = self.loop.run_until_complete(kill_running())
+            try:
+                returncode, killed = self.loop.run_until_complete(
+                    kill_running()
+                )
+            except asyncio.TimeoutError:
+                self.skipTest(
+                    "Timeout failure on waiting for subprocess stopping"
+                )
         self.assertIsNone(returncode)
 
         # transport.close() must kill the process if it is still running
@@ -677,6 +684,8 @@ if sys.platform != 'win32':
 
         Watcher = unix_events.ThreadedChildWatcher
 
+    @unittest.skip("bpo-38323: MultiLoopChildWatcher has a race condition \
+                    and these tests can hang the test suite")
     class SubprocessMultiLoopWatcherTests(SubprocessWatcherMixin,
                                           test_utils.TestCase):
 

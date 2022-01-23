@@ -169,7 +169,7 @@ class MimeTypes:
         but non-standard types.
         """
         type = type.lower()
-        extensions = self.types_map_inv[True].get(type, [])
+        extensions = list(self.types_map_inv[True].get(type, []))
         if not strict:
             for ext in self.types_map_inv[False].get(type, []):
                 if ext not in extensions:
@@ -372,7 +372,7 @@ def init(files=None):
 
 def read_mime_types(file):
     try:
-        f = open(file)
+        f = open(file, encoding='utf-8')
     except OSError:
         return None
     with f:

@@ -1,7 +1,10 @@
 /* Implementation of biased reference counting */
 
 #include "Python.h"
+#include "pycore_llist.h"
+#include "pycore_object.h"
 #include "pycore_pystate.h"
+#include "pycore_refcnt.h"
 #include "lock.h"
 
 // TODO: not efficient
@@ -11,35 +14,78 @@ typedef struct {
     struct llist_node threads;
 } Bucket;
 
-struct brc_queued_object {
-    PyObject *object;
-    struct brc_queued_object* next;
-};
-
 #define NUM_BUCKETS 251
 
 static Bucket buckets[NUM_BUCKETS];
 
-static struct _PyBrcState *
-find_brc_state(Bucket *bucket, uintptr_t thread_id)
+static inline struct brc_state *
+brc_state(PyThreadState *tstate)
+{
+    return &((PyThreadStateImpl *)tstate)->brc;
+}
+
+static PyThreadStateImpl *
+find_thread_state(Bucket *bucket, uintptr_t thread_id)
 {
     struct llist_node *node;
     llist_for_each(node, &bucket->threads) {
-        struct _PyBrcState *brc = llist_data(node, struct _PyBrcState, node);
-        if (brc->thread_id == thread_id) {
-            return brc;
+        PyThreadStateImpl *ts;
+        ts = llist_data(node, PyThreadStateImpl, brc.bucket_node);
+        if (ts->tstate.fast_thread_id == thread_id) {
+            return ts;
         }
     }
     return NULL;
 }
 
+
+_PyObjectQueue *
+_PyObjectQueue_New(void)
+{
+    _PyObjectQueue *q = PyMem_RawMalloc(sizeof(_PyObjectQueue));
+    if (q == NULL) {
+        Py_FatalError("gc: failed to allocate object queue");
+    }
+    q->prev = NULL;
+    q->n = 0;
+    return q;
+}
+
+void
+_PyObjectQueue_Merge(_PyObjectQueue **dst_ptr, _PyObjectQueue **src_ptr)
+{
+    _PyObjectQueue *dst = *dst_ptr;
+    _PyObjectQueue *src = *src_ptr;
+    if (src == NULL) {
+        return;
+    }
+    if (dst == NULL || (dst->n == 0 && dst->prev == NULL)) {
+        *dst_ptr = src;
+        *src_ptr = dst;
+        return;
+    }
+
+    _PyObjectQueue *last = src;
+    while (last->prev != NULL) {
+        last = last->prev;
+    }
+    last->prev = dst;
+    *dst_ptr = src;
+    *src_ptr = NULL;
+}
+
+
 void
 _Py_queue_object(PyObject *ob, uintptr_t tid)
 {
+    PyThreadStateImpl *tstate_impl;
     Bucket *bucket = &buckets[tid % NUM_BUCKETS];
 
+    assert(!_PyObject_IS_DEFERRED_RC(ob) &&
+           "deferred refcounted objects should not be queued");
+
     if (tid == 0) {
-        if (_PyObject_IS_IMMORTAL(ob) || _PyObject_IS_DEFERRED_RC(ob)) {
+        if (_PyObject_IS_IMMORTAL(ob)) {
             // kind of awkward, but strings can be immortalized after they have
             // a bunch of references and the new interpreter still tries decrefing
             // the immortalized object.
@@ -49,11 +95,12 @@ _Py_queue_object(PyObject *ob, uintptr_t tid)
     }
 
     _PyMutex_lock(&bucket->mutex);
-    struct _PyBrcState *brc = find_brc_state(bucket, tid);
-    if (!brc) {
+    tstate_impl = find_thread_state(bucket, tid);
+    if (!tstate_impl) {
         // If we didn't find the owning thread then it must have already exited.
-        // It's safe (and necessary) to merge the refcount.
-        Py_ssize_t refcount = _Py_ExplicitMergeRefcount(ob);
+        // It's safe (and necessary) to merge the refcount. Subtract one when
+        // merging because we've stolen a reference.
+        Py_ssize_t refcount = _Py_ExplicitMergeRefcount(ob, -1);
         _PyMutex_unlock(&bucket->mutex);
         if (refcount == 0) {
             _Py_Dealloc(ob);
@@ -61,37 +108,32 @@ _Py_queue_object(PyObject *ob, uintptr_t tid)
         return;
     }
 
-    struct brc_queued_object *entry = PyMem_RawMalloc(sizeof(struct brc_queued_object));
-    if (!entry) {
-        // TODO(sgross): we can probably catch these later on in garbage collection.
-        _PyMutex_unlock(&bucket->mutex);
-        fprintf(stderr, "error: unable to allocate entry for brc_queued_object\n");
-        return;
-    }
-    entry->object = ob;
-    entry->next = brc->queue;
-    brc->queue = entry;
+    _PyObjectQueue_Push(&tstate_impl->brc.queue, ob);
 
     // Notify owning thread
-    PyThreadStateOS *os = llist_data(brc, PyThreadStateOS, brc);
-    _PyThreadState_Signal(os->tstate, EVAL_EXPLICIT_MERGE);
+    _PyThreadState_Signal(&tstate_impl->tstate, EVAL_EXPLICIT_MERGE);
 
     _PyMutex_unlock(&bucket->mutex);
 }
 
 static void
-_Py_queue_merge_objects(struct brc_queued_object* head)
+_Py_queue_merge_objects(struct brc_state *brc)
 {
-    struct brc_queued_object* next;
-    while (head) {
-        next = head->next;
-        PyObject *ob = head->object;
-        Py_ssize_t refcount = _Py_ExplicitMergeRefcount(ob);
+    // Process all objects to be merged in the local queue.
+    // Note that _Py_Dealloc call can reentrantly call into
+    // this function.
+    for (;;) {
+        PyObject *ob = _PyObjectQueue_Pop(&brc->local_queue);
+        if (ob == NULL) {
+            break;
+        }
+
+        // Subtract one when merging refcount because the queue
+        // owned a reference.
+        Py_ssize_t refcount = _Py_ExplicitMergeRefcount(ob, -1);
         if (refcount == 0) {
             _Py_Dealloc(ob);
         }
-        PyMem_RawFree(head);
-        head = next;
     }
 }
 
@@ -99,34 +141,64 @@ void
 _Py_queue_process(PyThreadState *tstate)
 {
     uintptr_t tid = tstate->fast_thread_id;
-    struct _PyBrcState *brc = &tstate->os->brc;
+    struct brc_state *brc = brc_state(tstate);
     Bucket *bucket = &buckets[tid % NUM_BUCKETS];
 
-    struct brc_queued_object* head;
+    assert(brc->bucket_node.next != NULL);
 
+    // Append all objects from "queue" into "local_queue"
     _PyMutex_lock(&bucket->mutex);
-    head = brc->queue;
-    brc->queue = NULL;
+    _PyObjectQueue_Merge(&brc->local_queue, &brc->queue);
     _PyMutex_unlock(&bucket->mutex);
 
-    _Py_queue_merge_objects(head);
+    // Process "local_queue" until it's empty
+    _Py_queue_merge_objects(brc);
+}
+
+void
+_Py_queue_process_gc(PyThreadState *tstate, _PyObjectQueue **queue_ptr)
+{
+    struct brc_state *brc = brc_state(tstate);
+
+    if (brc->bucket_node.next == NULL) {
+        // thread isn't finish initializing
+        return;
+    }
+
+    _PyObjectQueue_Merge(&brc->local_queue, &brc->queue);
+
+    for (;;) {
+        PyObject *ob = _PyObjectQueue_Pop(&brc->local_queue);
+        if (ob == NULL) {
+            break;
+        }
+
+        // Subtract one when merging refcount because the queue
+        // owned a reference.
+        Py_ssize_t refcount = _Py_ExplicitMergeRefcount(ob, -1);
+        if (refcount == 0) {
+            if (!PyObject_GC_IsTracked(ob)) {
+                _PyObjectQueue_Push(queue_ptr, ob);
+            }
+        }
+    }
 }
 
 void
 _Py_queue_create(PyThreadState *tstate)
 {
     uintptr_t tid = tstate->fast_thread_id;
-    struct _PyBrcState *brc = &tstate->os->brc;
+    struct brc_state *brc = brc_state(tstate);
     Bucket *bucket = &buckets[tid % NUM_BUCKETS];
 
     brc->queue = NULL;
-    brc->thread_id = tid;
+    brc->local_queue = NULL;
 
     _PyMutex_lock(&bucket->mutex);
     if (bucket->threads.next == NULL) {
         llist_init(&bucket->threads);
     }
-    llist_insert_tail(&bucket->threads, &brc->node);
+    llist_insert_tail(&bucket->threads, &brc->bucket_node);
     _PyMutex_unlock(&bucket->mutex);
 }
 
@@ -134,20 +206,16 @@ void
 _Py_queue_destroy(PyThreadState *tstate)
 {
     uintptr_t tid = tstate->fast_thread_id;
-    struct _PyBrcState *brc = &tstate->os->brc;
+    struct brc_state *brc = brc_state(tstate);
     Bucket *bucket = &buckets[tid % NUM_BUCKETS];
 
-    struct brc_queued_object* queue;
-
     _PyMutex_lock(&bucket->mutex);
-    if (brc->node.next) {
-        llist_remove(&brc->node);
+    if (brc->bucket_node.next) {
+        llist_remove(&brc->bucket_node);
+        _PyObjectQueue_Merge(&brc->local_queue, &brc->queue);
     }
-    queue = brc->queue;
-    brc->queue = NULL;
     _PyMutex_unlock(&bucket->mutex);
 
-    if (queue) {
-        _Py_queue_merge_objects(queue);
-    }
+    // Process "local_queue" until it's empty
+    _Py_queue_merge_objects(brc);
 }

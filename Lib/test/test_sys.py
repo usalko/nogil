@@ -242,7 +242,7 @@ class SysModuleTest(unittest.TestCase):
         # mark". Otherwise, it may not be possible anymore to
         # reset the overflowed flag to 0.
 
-        from _testcapi import get_recursion_depth
+        from _testinternalcapi import get_recursion_depth
 
         def set_recursion_limit_at_depth(depth, limit):
             recursion_depth = get_recursion_depth()
@@ -269,31 +269,6 @@ class SysModuleTest(unittest.TestCase):
                 set_recursion_limit_at_depth(depth, limit)
         finally:
             sys.setrecursionlimit(oldlimit)
-
-    @unittest.skip("sgross: no low water mark")
-    def test_recursionlimit_fatalerror(self):
-        # A fatal error occurs if a second recursion limit is hit when recovering
-        # from a first one.
-        code = textwrap.dedent("""
-            import sys
-
-            def f():
-                try:
-                    f()
-                except RecursionError:
-                    f()
-
-            sys.setrecursionlimit(%d)
-            f()""")
-        with test.support.SuppressCrashReport():
-            for i in (50, 1000):
-                sub = subprocess.Popen([sys.executable, '-c', code % i],
-                    stderr=subprocess.PIPE)
-                err = sub.communicate()[1]
-                self.assertTrue(sub.returncode, sub.returncode)
-                self.assertIn(
-                    b"Fatal Python error: Cannot recover from stack overflow",
-                    err)
 
     def test_getwindowsversion(self):
         # Raise SkipTest if sys doesn't have getwindowsversion attribute
@@ -409,7 +384,7 @@ class SysModuleTest(unittest.TestCase):
         self.assertTrue(frame is sys._getframe())
 
         # Verify that the captured thread frame is blocked in g456, called
-        # from f123.  This is a litte tricky, since various bits of
+        # from f123.  This is a little tricky, since various bits of
         # threading.py are also in the thread's call stack.
         frame = d.pop(thread_id)
         stack = traceback.extract_stack(frame)
@@ -486,6 +461,7 @@ class SysModuleTest(unittest.TestCase):
         self.assertIsInstance(sys.platform, str)
         self.assertIsInstance(sys.prefix, str)
         self.assertIsInstance(sys.base_prefix, str)
+        self.assertIsInstance(sys.platlibdir, str)
         self.assertIsInstance(sys.version, str)
         vi = sys.version_info
         self.assertIsInstance(vi[:], tuple)
@@ -545,10 +521,10 @@ class SysModuleTest(unittest.TestCase):
     def test_sys_flags(self):
         self.assertTrue(sys.flags)
         attrs = ("debug",
-                 "inspect", "interactive", "optimize", "dont_write_bytecode",
-                 "no_user_site", "no_site", "ignore_environment", "verbose",
-                 "bytes_warning", "quiet", "hash_randomization", "isolated",
-                 "dev_mode", "utf8_mode")
+                 "inspect", "interactive", "optimize",
+                 "dont_write_bytecode", "no_user_site", "no_site",
+                 "ignore_environment", "verbose", "bytes_warning", "quiet",
+                 "hash_randomization", "isolated", "dev_mode", "utf8_mode")
         for attr in attrs:
             self.assertTrue(hasattr(sys.flags, attr), attr)
             attr_type = bool if attr == "dev_mode" else int
@@ -1003,6 +979,20 @@ class UnraisableHookTest(unittest.TestCase):
                     self.assertIn("del is broken", report)
                 self.assertTrue(report.endswith("\n"))
 
+    def test_original_unraisablehook_exception_qualname(self):
+        class A:
+            class B:
+                class X(Exception):
+                    pass
+
+        with test.support.captured_stderr() as stderr, \
+             test.support.swap_attr(sys, 'unraisablehook',
+                                    sys.__unraisablehook__):
+                 expected = self.write_unraisable_exc(
+                     A.B.X(), "msg", "obj");
+        report = stderr.getvalue()
+        testName = 'test_original_unraisablehook_exception_qualname'
+        self.assertIn(f"{testName}.<locals>.A.B.X", report)
 
     def test_original_unraisablehook_wrong_type(self):
         exc = ValueError(42)
@@ -1055,8 +1045,8 @@ class SizeofTest(unittest.TestCase):
     def setUp(self):
         self.P = struct.calcsize('P')
         self.longdigit = sys.int_info.sizeof_digit
-        import _testcapi
-        self.gc_headsize = _testcapi.SIZEOF_PYGC_HEAD
+        import _testinternalcapi
+        self.gc_headsize = _testinternalcapi.SIZEOF_PYGC_HEAD
 
     check_sizeof = test.support.check_sizeof
 
@@ -1067,7 +1057,7 @@ class SizeofTest(unittest.TestCase):
         # bool objects are not gc tracked
         self.assertEqual(sys.getsizeof(True), vsize('') + self.longdigit)
         # but lists are
-        self.assertEqual(sys.getsizeof([]), vsize('PnPc') + gc_header_size)
+        self.assertEqual(sys.getsizeof([]), vsize('PnP') + gc_header_size)
 
     def test_errors(self):
         class BadSizeof:
@@ -1116,7 +1106,7 @@ class SizeofTest(unittest.TestCase):
         # buffer
         # XXX
         # builtin_function_or_method
-        check(len, size('7P'))
+        check(len, size('6P'))
         # bytearray
         samples = [b'', b'u'*100000]
         for sample in samples:
@@ -1147,7 +1137,7 @@ class SizeofTest(unittest.TestCase):
         # complex
         check(complex(0,1), size('2d'))
         # method_descriptor (descriptor object)
-        check(str.lower, size('7P'))
+        check(str.lower, size('4PPP'))
         # classmethod_descriptor (descriptor object)
         # XXX
         # member_descriptor (descriptor object)
@@ -1163,9 +1153,20 @@ class SizeofTest(unittest.TestCase):
         # empty dict
         # check({}, size('nQ2PcP'))
         # dict
-        # check({"a": 1}, size('nQ2PcP') + calcsize('3B2n') + 8 + (8*2//3)*calcsize('n2P'))
-        # longdict = {1:1, 2:2, 3:3, 4:4, 5:5, 6:6, 7:7, 8:8}
-        # check(longdict, size('nQ2PcP') + calcsize('3B2n') + 16 + (16*2//3)*calcsize('n2P'))
+        def dictsize(n, is_string, index_type='b'):
+            usable = n - (n // 8)
+            ctrl_size = max(n + 1, 16)
+            hash_size = n if not is_string else 0
+            index_size = usable + 1
+            return (size('nQ2P') +
+                    calcsize('nBnPn') +
+                    ctrl_size * calcsize('B') +
+                    hash_size * calcsize('n') +
+                    n * calcsize('2P') +
+                    index_size * calcsize(index_type))
+        check({"a": 1}, dictsize(7, is_string=True))
+        longdict = {1:1, 2:2, 3:3, 4:4, 5:5, 6:6, 7:7, 8:8}
+        check(longdict, dictsize(15, is_string=False))
         # dictionary-keyview
         check({}.keys(), size('P'))
         # dictionary-valueview
@@ -1207,16 +1208,16 @@ class SizeofTest(unittest.TestCase):
         check(sys.float_info, vsize('') + self.P * len(sys.float_info))
         # frame
         # import inspect
+        # CO_MAXBLOCKS = 20
         # x = inspect.currentframe()
         # ncells = len(x.f_code.co_cellvars)
         # nfrees = len(x.f_code.co_freevars)
-        # nblocks = x.f_code.co_maxfblocks
-        # extras = x.f_code.co_stacksize + 1 + +x.f_code.co_callablesize + x.f_code.co_nlocals +\
+        # extras = x.f_code.co_stacksize + x.f_code.co_nlocals +\
         #           ncells + nfrees - 1
-        # check(x, vsize('11P3i4c' + '2P' + extras*'P' + nblocks*'4i'))
+        # check(x, vsize('5P2c4P3ic' + CO_MAXBLOCKS*'3i' + 'P' + extras*'P'))
         # function
         def func(): pass
-        check(func, size('13P'))
+        check(func, size('13Pc'))
         class c():
             @staticmethod
             def foo():
@@ -1230,7 +1231,7 @@ class SizeofTest(unittest.TestCase):
             check(bar, size('PP'))
         # generator
         def get_gen(): yield 1
-        check(get_gen(), size('6Pc6Pc'))
+        check(get_gen(), size('6P2c6Pc'))
         # iterator
         check(iter('abc'), size('lP'))
         # callable-iterator
@@ -1239,7 +1240,7 @@ class SizeofTest(unittest.TestCase):
         # list
         samples = [[], [1,2,3,4], ['1', '2', '3', '4']]
         for sample in samples:
-            check(list(sample), vsize('PnPc') + len(sample)*self.P)
+            check(list(sample), vsize('PnP') + len(sample)*self.P)
         # sortwrapper (list)
         # XXX
         # cmpwrapper (list)
@@ -1257,7 +1258,7 @@ class SizeofTest(unittest.TestCase):
         check(int(PyLong_BASE**2-1), vsize('') + 2*self.longdigit)
         check(int(PyLong_BASE**2), vsize('') + 3*self.longdigit)
         # module
-        check(unittest, size('PnPPPP'))
+        check(unittest, size('PnPPPi'))
         # None
         check(None, size(''))
         # NotImplementedType
@@ -1284,7 +1285,7 @@ class SizeofTest(unittest.TestCase):
         # frozenset
         PySet_MINSIZE = 8
         samples = [[], range(10), range(50)]
-        s = size('3nP' + PySet_MINSIZE*'nP' + '2nP')
+        s = size('3nPP' + PySet_MINSIZE*'nP' + '2nP')
         for sample in samples:
             minused = len(sample)
             if minused == 0: tmp = 1
@@ -1311,7 +1312,7 @@ class SizeofTest(unittest.TestCase):
         check((1,2,3), vsize('') + 3*self.P)
         # type
         # static type: PyTypeObject
-        fmt = 'P2nPI13Pl4Pn9Pn11PIPPI'
+        fmt = 'P2nPI13Pl4Pn9Pn11PIPPn'
         s = vsize(fmt)
         check(int, s)
         # class
@@ -1321,18 +1322,21 @@ class SizeofTest(unittest.TestCase):
                   '3P'                  # PyMappingMethods
                   '10P'                 # PySequenceMethods
                   '2P'                  # PyBufferProcs
-                  '6P')
+                  '5P')
         class newstyleclass(object): pass
+        # Separate block for PyDictKeysObject with 8 keys and 5 entries
         check(newstyleclass, s)
+        # empty dict
+        check(newstyleclass().__dict__, size('nQ2P'))
         o = newstyleclass()
         # first class is blueprint
         # check(o.__dict__, size('nQ2PcP') + calcsize("3B2n0P") + 8 + 5*calcsize("n2P"))
         o.a = o.b = o.c = o.d = o.e = o.f = o.g = o.h = 1
-        del o
+        check(o.__dict__, dictsize(15, is_string=True))
         # Separate block for PyDictKeysObject with 16 keys and 10 entries
-        # check(newstyleclass, s + calcsize("3B2n0P") + 16 + 10*calcsize("n2P"))
+        check(newstyleclass, s)
         # dict with shared keys
-        # check(newstyleclass().__dict__, size('nQ2PcP') + 10*self.P)
+        check(newstyleclass().__dict__, size('nQ2P'))
         # unicode
         # each tuple contains a string and its expected character size
         # don't put any static strings here, as they may contain
@@ -1365,11 +1369,11 @@ class SizeofTest(unittest.TestCase):
         # TODO: add check that forces layout of unicodefields
         # weakref
         import weakref
-        check(weakref.ref(int), size('4Pn2P'))
+        check(weakref.ref(int), size('4Pn'))
         # weakproxy
         # XXX
         # weakcallableproxy
-        check(weakref.proxy(int), size('4Pn2P'))
+        check(weakref.proxy(int), size('4Pn'))
 
     def check_slots(self, obj, base, extra):
         expected = sys.getsizeof(base) + struct.calcsize(extra)
@@ -1447,6 +1451,21 @@ class SizeofTest(unittest.TestCase):
         self.assertIsNone(cur.firstiter)
         self.assertIsNone(cur.finalizer)
 
+    def test_changing_sys_stderr_and_removing_reference(self):
+        # If the default displayhook doesn't take a strong reference
+        # to sys.stderr the following code can crash. See bpo-43660
+        # for more details.
+        code = textwrap.dedent('''
+            import sys
+            class MyStderr:
+                def write(self, s):
+                    sys.stderr = None
+            sys.stderr = MyStderr()
+            1/0
+        ''')
+        rc, out, err = assert_python_failure('-c', code)
+        self.assertEqual(out, b"")
+        self.assertEqual(err, b"")
 
 if __name__ == "__main__":
     unittest.main()

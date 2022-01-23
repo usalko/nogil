@@ -223,7 +223,7 @@ typedef struct mi_page_s {
   #ifdef MI_ENCODE_FREELIST
   uintptr_t             keys[2];           // two random keys to encode the free lists (see `_mi_block_next`)
   #endif
-  _Atomic(uint8_t)      use_qsbr;
+  _Atomic(uint8_t)      use_qsbr;          // delay page freeing using qsbr
   int8_t                debug_offset;      // offset for filling in debug bytes (0xDD, 0xD0)
   uint16_t              used;              // number of blocks in use (including blocks in `local_free` and `thread_free`)
   uint32_t              xblock_size;       // size available in each block (always `>0`)
@@ -325,7 +325,6 @@ typedef struct mi_padding_s {
 
 #define MI_PAGES_DIRECT   (MI_SMALL_WSIZE_MAX + MI_PADDING_WSIZE + 1)
 
-struct _gc_runtime_state;
 
 // A heap owns a set of pages.
 struct mi_heap_s {
@@ -341,9 +340,8 @@ struct mi_heap_s {
   mi_heap_t*            next;                                // list of heaps per thread
   bool                  no_reclaim;                          // `true` if this heap should not reclaim abandoned pages
   unsigned char         tag;
-  bool                  visited;                                     // used by gcmodule.c
+  bool                  visited;                             // used by gcmodule.c
   int8_t                debug_offset;                        // offset for filling in debug bytes (0xDD, 0xD0)
-  struct _gc_runtime_state* gcstate;
 };
 
 
@@ -478,6 +476,12 @@ typedef struct mi_segments_tld_s {
   mi_os_tld_t*        os;           // points to os stats
 } mi_segments_tld_t;
 
+enum mi_tld_status_e {
+  MI_THREAD_ALIVE       = 0,
+  MI_THREAD_ABANDONED   = 1,
+  MI_THREAD_DEAD        = 2
+};
+
 // Thread local data
 struct mi_tld_s {
   unsigned long long  heartbeat;     // monotonic heartbeat count
@@ -489,6 +493,8 @@ struct mi_tld_s {
   struct llist_node   page_list;     // free pages
   mi_os_tld_t         os;            // os tld
   mi_stats_t          stats;         // statistics
+  _Atomic(uintptr_t)  refcount;      // used by pystate.c
+  _Atomic(uintptr_t)  status;        // used by pystate.c
 };
 
 #endif

@@ -3,6 +3,7 @@ import weakref
 import gc
 
 from test.support import check_syntax_error, cpython_only
+from test.support import gc_collect
 
 
 class ScopeTests(unittest.TestCase):
@@ -423,7 +424,7 @@ class ScopeTests(unittest.TestCase):
         for i in range(100):
             f1()
 
-        gc.collect()
+        gc_collect()  # For PyPy or other GCs.
         self.assertEqual(Foo.count, 0)
 
     def testClassAndGlobal(self):
@@ -756,6 +757,7 @@ class ScopeTests(unittest.TestCase):
         tester.dig()
         ref = weakref.ref(tester)
         del tester
+        gc_collect()  # For PyPy or other GCs.
         self.assertIsNone(ref())
 
 

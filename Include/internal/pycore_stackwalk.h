@@ -1,7 +1,7 @@
 #ifndef Py_INTERNAL_STACKWALK_H
 #define Py_INTERNAL_STACKWALK_H
 
-#include "opcode2.h"
+#include "opcode.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,26 +34,26 @@ static inline int
 vm_stack_walk_thread(struct stack_walk *w)
 {
     struct ThreadState *ts = w->ts;
-    for (;;) {
-        if (w->regs != NULL) {
-            intptr_t frame_delta = ts->regs[w->offset-4].as_int64;
-            intptr_t frame_link = ts->regs[w->offset-3].as_int64;
-            w->offset -= frame_delta;
-            w->pc = (const uint8_t *)(frame_link < 0 ? -frame_link : frame_link);
-            w->frame_link = frame_link;
-        }
-        else {
-            w->pc = ts->pc;
-            w->frame_link = 0;
-        }
-
-        if (ts->regs + w->offset == ts->stack) {
-            return 0;
-        }
-
-        w->regs = &ts->regs[w->offset];
-        return 1;
+    if (w->regs == NULL) {
+        w->regs = ts->regs;
+        w->pc = ts->pc;
+        w->frame_link = 0;
+        w->offset = w->regs - ts->stack;
     }
+    else {
+        // re-fetch regs in case the stack was re-allocated
+        // FIXME(sgross): offset depth use ts
+        w->regs = &ts->stack[w->offset];
+
+        intptr_t frame_delta = w->regs[-4].as_int64;
+        intptr_t frame_link = w->regs[-3].as_int64;
+        w->offset -= frame_delta;
+        w->pc = (const uint8_t *)(frame_link < 0 ? -frame_link : frame_link);
+        w->frame_link = frame_link;
+        w->regs -= frame_delta;
+    }
+
+    return w->regs > ts->stack;
 }
 
 static inline int
@@ -64,7 +64,6 @@ vm_stack_walk_all(struct stack_walk *w)
         if (vm_stack_walk_thread(w) == 0) {
             // switch to calling virtual thread
             w->ts = ts = ts->prev;
-            w->offset = 0;
             w->regs = NULL;
             continue;
         }
@@ -77,7 +76,8 @@ static inline int
 vm_stack_walk(struct stack_walk *w)
 {
     while (vm_stack_walk_all(w)) {
-        if (PyFunc_Check(AS_OBJ(w->regs[-1])) && w->pc != NULL) {
+        PyObject *func = AS_OBJ(w->regs[-1]);
+        if (func != NULL && PyFunction_Check(func) && w->pc != NULL) {
             return 1;
         }
     }

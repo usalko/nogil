@@ -14,6 +14,13 @@ extern "C++" {
 #endif
 
 
+static inline int
+_Py_atomic_add_int(volatile int *address, int value)
+{
+    MI_USING_STD
+    return atomic_fetch_add((volatile _Atomic(int)*)address, value);
+}
+
 static inline int32_t
 _Py_atomic_add_int32(volatile int32_t *address, int32_t value)
 {
@@ -56,6 +63,20 @@ _Py_atomic_add_uintptr(volatile uintptr_t *address, uintptr_t value)
     return atomic_fetch_add((volatile _Atomic(uintptr_t)*)address, value);
 }
 
+static inline Py_ssize_t
+_Py_atomic_add_ssize(volatile Py_ssize_t *address, Py_ssize_t value)
+{
+    MI_USING_STD
+    return atomic_fetch_add((volatile _Atomic(Py_ssize_t)*)address, value);
+}
+
+
+static inline int
+_Py_atomic_compare_exchange_int(volatile int *address, int expected, int value)
+{
+    MI_USING_STD
+    return atomic_compare_exchange_strong((volatile _Atomic(int)*)address, &expected, value);
+}
 
 static inline int
 _Py_atomic_compare_exchange_int32(volatile int32_t *address, int32_t expected, int32_t value)
@@ -107,6 +128,13 @@ _Py_atomic_compare_exchange_ptr(volatile void *address, void *expected, void *va
 }
 
 
+static inline int
+_Py_atomic_exchange_int(volatile int *address, int value)
+{
+    MI_USING_STD
+    return atomic_exchange((volatile _Atomic(int)*)address, value);
+}
+
 static inline int32_t
 _Py_atomic_exchange_int32(volatile int32_t *address, int32_t value)
 {
@@ -157,6 +185,13 @@ _Py_atomic_exchange_ptr(volatile void *address, void *value)
 }
 
 
+static inline int
+_Py_atomic_load_int(const volatile int *address)
+{
+    MI_USING_STD
+    return atomic_load((const volatile _Atomic(int)*)address);
+}
+
 static inline int32_t
 _Py_atomic_load_int32(const volatile int32_t *address)
 {
@@ -199,13 +234,6 @@ _Py_atomic_load_uintptr(const volatile uintptr_t *address)
     return atomic_load((const volatile _Atomic(uintptr_t)*)address);
 }
 
-static inline void *
-_Py_atomic_load_ptr(const volatile void *address)
-{
-    MI_USING_STD
-    return atomic_load((const volatile _Atomic(void*)*)address);
-}
-
 static inline Py_ssize_t
 _Py_atomic_load_ssize(const volatile Py_ssize_t *address)
 {
@@ -213,6 +241,20 @@ _Py_atomic_load_ssize(const volatile Py_ssize_t *address)
     return atomic_load((const volatile _Atomic(Py_ssize_t)*)address);
 }
 
+static inline void *
+_Py_atomic_load_ptr(const volatile void *address)
+{
+    MI_USING_STD
+    return atomic_load((const volatile _Atomic(void*)*)address);
+}
+
+
+static inline int
+_Py_atomic_load_int_relaxed(const volatile int *address)
+{
+    MI_USING_STD
+    return atomic_load_explicit((const volatile _Atomic(int)*)address, memory_order_relaxed);
+}
 
 static inline int32_t
 _Py_atomic_load_int32_relaxed(const volatile int32_t *address)
@@ -256,6 +298,13 @@ _Py_atomic_load_uintptr_relaxed(const volatile uintptr_t *address)
     return atomic_load_explicit((const volatile _Atomic(uintptr_t)*)address, memory_order_relaxed);
 }
 
+static inline Py_ssize_t
+_Py_atomic_load_ssize_relaxed(const volatile Py_ssize_t *address)
+{
+    MI_USING_STD
+    return atomic_load_explicit((const volatile _Atomic(Py_ssize_t)*)address, memory_order_relaxed);
+}
+
 static inline void *
 _Py_atomic_load_ptr_relaxed(const volatile void *address)
 {
@@ -263,6 +312,12 @@ _Py_atomic_load_ptr_relaxed(const volatile void *address)
     return atomic_load_explicit((const volatile _Atomic(void*)*)address, memory_order_relaxed);
 }
 
+static inline void
+_Py_atomic_store_int(volatile int *address, int value)
+{
+    MI_USING_STD
+    atomic_store((volatile _Atomic(int)*)address, value);
+}
 
 static inline void
 _Py_atomic_store_int32(volatile int32_t *address, int32_t value)
@@ -314,17 +369,17 @@ _Py_atomic_store_ptr(volatile void *address, void *value)
 }
 
 static inline void
-_Py_atomic_store_uint8(volatile uint8_t *address, uint8_t value)
-{
-    MI_USING_STD
-    atomic_store_explicit((volatile _Atomic(uint8_t)*)address, value, memory_order_relaxed);
-}
-
-static inline void
 _Py_atomic_store_ssize(volatile Py_ssize_t *address, Py_ssize_t value)
 {
     MI_USING_STD
-    atomic_store_explicit((volatile _Atomic(Py_ssize_t)*)address, value, memory_order_relaxed);
+    atomic_store((volatile _Atomic(Py_ssize_t)*)address, value);
+}
+
+static inline void
+_Py_atomic_store_int_relaxed(volatile int *address, int value)
+{
+    MI_USING_STD
+    atomic_store_explicit((volatile _Atomic(int)*)address, value, memory_order_relaxed);
 }
 
 static inline void
@@ -398,8 +453,22 @@ _Py_atomic_store_ssize_relaxed(volatile Py_ssize_t *address, Py_ssize_t value)
 }
 
 static inline void
-_Py_atomic_thread_fence(void)
+_Py_atomic_store_uint8_relaxed(volatile uint8_t *address, uint8_t value)
+{
+    MI_USING_STD
+    atomic_store_explicit((volatile _Atomic(uint8_t)*)address, value, memory_order_relaxed);
+}
+
+ static inline void
+_Py_atomic_fence_seq_cst(void)
 {
     MI_USING_STD
     atomic_thread_fence(memory_order_seq_cst);
+}
+
+ static inline void
+_Py_atomic_fence_release(void)
+{
+    MI_USING_STD
+    atomic_thread_fence(memory_order_release);
 }

@@ -15,12 +15,13 @@ import socketserver
 
 import test.support
 from test.support import reap_children, reap_threads, verbose
+from test.support import socket_helper
 
 
 test.support.requires("network")
 
 TEST_STR = b"hello world\n"
-HOST = test.support.HOST
+HOST = socket_helper.HOST
 
 HAVE_UNIX_SOCKETS = hasattr(socket, "AF_UNIX")
 requires_unix_sockets = unittest.skipUnless(HAVE_UNIX_SOCKETS,
@@ -65,9 +66,7 @@ def simple_subprocess(testcase):
     except:
         raise
     finally:
-        pid2, status = os.waitpid(pid, 0)
-        testcase.assertEqual(pid2, pid)
-        testcase.assertEqual(72 << 8, status)
+        test.support.wait_process(pid, exitcode=72)
 
 
 class SocketServerTest(unittest.TestCase):
@@ -275,6 +274,13 @@ class SocketServerTest(unittest.TestCase):
         for t, s in threads:
             t.join()
             s.server_close()
+
+    def test_close_immediately(self):
+        class MyServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+            pass
+
+        server = MyServer((HOST, 0), lambda: None)
+        server.server_close()
 
     def test_tcpserver_bind_leak(self):
         # Issue #22435: the server socket wouldn't be closed if bind()/listen()
@@ -488,6 +494,22 @@ class MiscTestCase(unittest.TestCase):
         s.close()
         server.handle_request()
         self.assertEqual(server.shutdown_called, 1)
+        server.server_close()
+
+    def test_threads_reaped(self):
+        """
+        In #37193, users reported a memory leak
+        due to the saving of every request thread. Ensure that
+        not all threads are kept forever.
+        """
+        class MyServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+            pass
+
+        server = MyServer((HOST, 0), socketserver.StreamRequestHandler)
+        for n in range(10):
+            with socket.create_connection(server.server_address):
+                server.handle_request()
+        self.assertLess(len(server._threads), 10)
         server.server_close()
 
 

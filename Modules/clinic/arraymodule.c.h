@@ -316,7 +316,7 @@ PyDoc_STRVAR(array_array_frombytes__doc__,
 "frombytes($self, buffer, /)\n"
 "--\n"
 "\n"
-"Appends items from the string, interpreting it as an array of machine values, as if it had been read from a file using the fromfile() method).");
+"Appends items from the string, interpreting it as an array of machine values, as if it had been read from a file using the fromfile() method.");
 
 #define ARRAY_ARRAY_FROMBYTES_METHODDEF    \
     {"frombytes", (PyCFunction)array_array_frombytes, METH_O, array_array_frombytes__doc__},
@@ -380,20 +380,23 @@ PyDoc_STRVAR(array_array_fromunicode__doc__,
     {"fromunicode", (PyCFunction)array_array_fromunicode, METH_O, array_array_fromunicode__doc__},
 
 static PyObject *
-array_array_fromunicode_impl(arrayobject *self, const Py_UNICODE *ustr,
-                             Py_ssize_clean_t ustr_length);
+array_array_fromunicode_impl(arrayobject *self, PyObject *ustr);
 
 static PyObject *
 array_array_fromunicode(arrayobject *self, PyObject *arg)
 {
     PyObject *return_value = NULL;
-    const Py_UNICODE *ustr;
-    Py_ssize_clean_t ustr_length;
+    PyObject *ustr;
 
-    if (!PyArg_Parse(arg, "u#:fromunicode", &ustr, &ustr_length)) {
+    if (!PyUnicode_Check(arg)) {
+        _PyArg_BadArgument("fromunicode", "argument", "str", arg);
         goto exit;
     }
-    return_value = array_array_fromunicode_impl(self, ustr, ustr_length);
+    if (PyUnicode_READY(arg) == -1) {
+        goto exit;
+    }
+    ustr = arg;
+    return_value = array_array_fromunicode_impl(self, ustr);
 
 exit:
     return return_value;
@@ -531,4 +534,4 @@ PyDoc_STRVAR(array_arrayiterator___setstate____doc__,
 
 #define ARRAY_ARRAYITERATOR___SETSTATE___METHODDEF    \
     {"__setstate__", (PyCFunction)array_arrayiterator___setstate__, METH_O, array_arrayiterator___setstate____doc__},
-/*[clinic end generated code: output=f649fc0bc9f6b13a input=a9049054013a1b77]*/
+/*[clinic end generated code: output=485e848d1f3d05e7 input=a9049054013a1b77]*/

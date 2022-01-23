@@ -44,7 +44,8 @@ executed::
 
 Summarizing:
 
-.. productionlist::
+
+.. productionlist:: python-grammar
    compound_stmt: `if_stmt`
                 : | `while_stmt`
                 : | `for_stmt`
@@ -89,9 +90,9 @@ The :keyword:`!if` statement
 
 The :keyword:`if` statement is used for conditional execution:
 
-.. productionlist::
-   if_stmt: "if" `expression` ":" `suite`
-          : ("elif" `expression` ":" `suite`)*
+.. productionlist:: python-grammar
+   if_stmt: "if" `assignment_expression` ":" `suite`
+          : ("elif" `assignment_expression` ":" `suite`)*
           : ["else" ":" `suite`]
 
 It selects exactly one of the suites by evaluating the expressions one by one
@@ -115,8 +116,8 @@ The :keyword:`!while` statement
 The :keyword:`while` statement is used for repeated execution as long as an
 expression is true:
 
-.. productionlist::
-   while_stmt: "while" `expression` ":" `suite`
+.. productionlist:: python-grammar
+   while_stmt: "while" `assignment_expression` ":" `suite`
              : ["else" ":" `suite`]
 
 This repeatedly tests the expression and, if it is true, executes the first
@@ -151,7 +152,7 @@ The :keyword:`!for` statement
 The :keyword:`for` statement is used to iterate over the elements of a sequence
 (such as a string, tuple or list) or other iterable object:
 
-.. productionlist::
+.. productionlist:: python-grammar
    for_stmt: "for" `target_list` "in" `expression_list` ":" `suite`
            : ["else" ":" `suite`]
 
@@ -234,7 +235,7 @@ The :keyword:`!try` statement
 The :keyword:`try` statement specifies exception handlers and/or cleanup code
 for a group of statements:
 
-.. productionlist::
+.. productionlist:: python-grammar
    try_stmt: `try1_stmt` | `try2_stmt`
    try1_stmt: "try" ":" `suite`
             : ("except" [`expression` ["as" `identifier`]] ":" `suite`)+
@@ -253,7 +254,8 @@ present, must be last; it matches any exception.  For an except clause with an
 expression, that expression is evaluated, and the clause matches the exception
 if the resulting object is "compatible" with the exception.  An object is
 compatible with an exception if it is the class or a base class of the exception
-object or a tuple containing an item compatible with the exception.
+object, or a tuple containing an item that is the class or a base class of
+the exception object.
 
 If no except clause matches the exception, the search for an exception handler
 continues in the surrounding code and on the invocation stack.  [#]_
@@ -390,7 +392,7 @@ methods defined by a context manager (see section :ref:`context-managers`).
 This allows common :keyword:`try`...\ :keyword:`except`...\ :keyword:`finally`
 usage patterns to be encapsulated for convenient reuse.
 
-.. productionlist::
+.. productionlist:: python-grammar
    with_stmt: "with" `with_item` ("," `with_item`)* ":" `suite`
    with_item: `expression` ["as" `target`]
 
@@ -477,7 +479,6 @@ is semantically equivalent to::
       The specification, background, and examples for the Python :keyword:`with`
       statement.
 
-
 .. index::
    single: parameter; function definition
 
@@ -503,12 +504,11 @@ Function definitions
 A function definition defines a user-defined function object (see section
 :ref:`types`):
 
-.. productionlist::
+.. productionlist:: python-grammar
    funcdef: [`decorators`] "def" `funcname` "(" [`parameter_list`] ")"
           : ["->" `expression`] ":" `suite`
    decorators: `decorator`+
-   decorator: "@" `dotted_name` ["(" [`argument_list` [","]] ")"] NEWLINE
-   dotted_name: `identifier` ("." `identifier`)*
+   decorator: "@" `assignment_expression` NEWLINE
    parameter_list: `defparameter` ("," `defparameter`)* "," "/" ["," [`parameter_list_no_posonly`]]
                  :   | `parameter_list_no_posonly`
    parameter_list_no_posonly: `defparameter` ("," `defparameter`)* ["," [`parameter_list_starargs`]]
@@ -550,6 +550,11 @@ is roughly equivalent to ::
 
 except that the original function is not temporarily bound to the name ``func``.
 
+.. versionchanged:: 3.9
+   Functions may be decorated with any valid :token:`assignment_expression`.
+   Previously, the grammar was much more restrictive; see :pep:`614` for
+   details.
+
 .. index::
    triple: default; parameter; value
    single: argument; function definition
@@ -580,19 +585,25 @@ e.g.::
        return penguin
 
 .. index::
+   single: / (slash); function definition
    single: * (asterisk); function definition
    single: **; function definition
 
 Function call semantics are described in more detail in section :ref:`calls`. A
 function call always assigns values to all parameters mentioned in the parameter
-list, either from position arguments, from keyword arguments, or from default
+list, either from positional arguments, from keyword arguments, or from default
 values.  If the form "``*identifier``" is present, it is initialized to a tuple
 receiving any excess positional parameters, defaulting to the empty tuple.
 If the form "``**identifier``" is present, it is initialized to a new
 ordered mapping receiving any excess keyword arguments, defaulting to a
 new empty mapping of the same type.  Parameters after "``*``" or
 "``*identifier``" are keyword-only parameters and may only be passed
-used keyword arguments.
+by keyword arguments.  Parameters before "``/``" are positional-only parameters
+and may only be passed by positional arguments.
+
+.. versionchanged:: 3.8
+   The ``/`` function parameter syntax may be used to indicate positional-only
+   parameters. See :pep:`570` for details.
 
 .. index::
    pair: function; annotations
@@ -665,7 +676,7 @@ Class definitions
 
 A class definition defines a class object (see section :ref:`types`):
 
-.. productionlist::
+.. productionlist:: python-grammar
    classdef: [`decorators`] "class" `classname` [`inheritance`] ":" `suite`
    inheritance: "(" [`argument_list`] ")"
    classname: `identifier`
@@ -717,6 +728,11 @@ is roughly equivalent to ::
 The evaluation rules for the decorator expressions are the same as for function
 decorators.  The result is then bound to the class name.
 
+.. versionchanged:: 3.9
+   Classes may be decorated with any valid :token:`assignment_expression`.
+   Previously, the grammar was much more restrictive; see :pep:`614` for
+   details.
+
 **Programmer's note:** Variables defined in the class definition are class
 attributes; they are shared by instances.  Instance attributes can be set in a
 method with ``self.name = value``.  Both class and instance attributes are
@@ -752,7 +768,7 @@ Coroutines
 Coroutine function definition
 -----------------------------
 
-.. productionlist::
+.. productionlist:: python-grammar
    async_funcdef: [`decorators`] "async" "def" `funcname` "(" [`parameter_list`] ")"
                 : ["->" `expression`] ":" `suite`
 
@@ -785,15 +801,15 @@ An example of a coroutine function::
 The :keyword:`!async for` statement
 -----------------------------------
 
-.. productionlist::
+.. productionlist:: python-grammar
    async_for_stmt: "async" `for_stmt`
 
-An :term:`asynchronous iterable` is able to call asynchronous code in its
-*iter* implementation, and :term:`asynchronous iterator` can call asynchronous
-code in its *next* method.
+An :term:`asynchronous iterable` provides an ``__aiter__`` method that directly
+returns an :term:`asynchronous iterator`, which can call asynchronous code in
+its ``__anext__`` method.
 
 The ``async for`` statement allows convenient iteration over asynchronous
-iterators.
+iterables.
 
 The following code::
 
@@ -830,7 +846,7 @@ body of a coroutine function.
 The :keyword:`!async with` statement
 ------------------------------------
 
-.. productionlist::
+.. productionlist:: python-grammar
    async_with_stmt: "async" `with_stmt`
 
 An :term:`asynchronous context manager` is a :term:`context manager` that is

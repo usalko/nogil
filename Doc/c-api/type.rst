@@ -13,7 +13,7 @@ Type Objects
    The C structure of the objects used to describe built-in types.
 
 
-.. c:var:: PyObject* PyType_Type
+.. c:var:: PyTypeObject PyType_Type
 
    This is the type object for type objects; it is the same object as
    :class:`type` in the Python layer.
@@ -23,12 +23,14 @@ Type Objects
 
    Return non-zero if the object *o* is a type object, including instances of
    types derived from the standard type object.  Return 0 in all other cases.
+   This function always succeeds.
 
 
 .. c:function:: int PyType_CheckExact(PyObject *o)
 
-   Return non-zero if the object *o* is a type object, but not a subtype of the
-   standard type object.  Return 0 in all other cases.
+   Return non-zero if the object *o* is a type object, but not a subtype of
+   the standard type object.  Return 0 in all other cases.  This function
+   always succeeds.
 
 
 .. c:function:: unsigned int PyType_ClearCache()
@@ -95,6 +97,15 @@ Type Objects
    from a type's base class.  Return ``0`` on success, or return ``-1`` and sets an
    exception on error.
 
+   .. note::
+       If some of the base classes implements the GC protocol and the provided
+       type does not include the :const:`Py_TPFLAGS_HAVE_GC` in its flags, then
+       the GC protocol will be automatically implemented from its parents. On
+       the contrary, if the type being created does include
+       :const:`Py_TPFLAGS_HAVE_GC` in its flags then it **must** implement the
+       GC protocol itself by at least implementing the
+       :c:member:`~PyTypeObject.tp_traverse` handle.
+
 .. c:function:: void* PyType_GetSlot(PyTypeObject *type, int slot)
 
    Return the function pointer stored in the given slot. If the
@@ -109,6 +120,37 @@ Type Objects
 
    .. versionadded:: 3.4
 
+.. c:function:: PyObject* PyType_GetModule(PyTypeObject *type)
+
+   Return the module object associated with the given type when the type was
+   created using :c:func:`PyType_FromModuleAndSpec`.
+
+   If no module is associated with the given type, sets :py:class:`TypeError`
+   and returns ``NULL``.
+
+   This function is usually used to get the module in which a method is defined.
+   Note that in such a method, ``PyType_GetModule(Py_TYPE(self))``
+   may not return the intended result.
+   ``Py_TYPE(self)`` may be a *subclass* of the intended class, and subclasses
+   are not necessarily defined in the same module as their superclass.
+   See :c:type:`PyCMethod` to get the class that defines the method.
+
+   .. versionadded:: 3.9
+
+.. c:function:: void* PyType_GetModuleState(PyTypeObject *type)
+
+   Return the state of the module object associated with the given type.
+   This is a shortcut for calling :c:func:`PyModule_GetState()` on the result
+   of :c:func:`PyType_GetModule`.
+
+   If no module is associated with the given type, sets :py:class:`TypeError`
+   and returns ``NULL``.
+
+   If the *type* has an associated module but its state is ``NULL``,
+   returns ``NULL`` without setting an exception.
+
+   .. versionadded:: 3.9
+
 
 Creating Heap-Allocated Types
 .............................
@@ -116,7 +158,7 @@ Creating Heap-Allocated Types
 The following functions and structs are used to create
 :ref:`heap types <heap-types>`.
 
-.. c:function:: PyObject* PyType_FromSpecWithBases(PyType_Spec *spec, PyObject *bases)
+.. c:function:: PyObject* PyType_FromModuleAndSpec(PyObject *module, PyType_Spec *spec, PyObject *bases)
 
    Creates and returns a heap type object from the *spec*
    (:const:`Py_TPFLAGS_HEAPTYPE`).
@@ -124,10 +166,24 @@ The following functions and structs are used to create
    If *bases* is a tuple, the created heap type contains all types contained
    in it as base types.
 
-   If *bases* is ``NULL``, the *Py_tp_base* slot is used instead.
+   If *bases* is ``NULL``, the *Py_tp_bases* slot is used instead.
+   If that also is ``NULL``, the *Py_tp_base* slot is used instead.
    If that also is ``NULL``, the new type derives from :class:`object`.
 
+   The *module* argument can be used to record the module in which the new
+   class is defined. It must be a module object or ``NULL``.
+   If not ``NULL``, the module is associated with the new type and can later be
+   retrieved with :c:func:`PyType_GetModule`.
+   The associated module is not inherited by subclasses; it must be specified
+   for each class individually.
+
    This function calls :c:func:`PyType_Ready` on the new type.
+
+   .. versionadded:: 3.9
+
+.. c:function:: PyObject* PyType_FromSpecWithBases(PyType_Spec *spec, PyObject *bases)
+
+   Equivalent to ``PyType_FromModuleAndSpec(NULL, spec, bases)``.
 
    .. versionadded:: 3.3
 
@@ -181,7 +237,8 @@ The following functions and structs are used to create
       * ``Py_nb_add`` to set :c:member:`PyNumberMethods.nb_add`
       * ``Py_sq_length`` to set :c:member:`PySequenceMethods.sq_length`
 
-      The following fields cannot be set using :c:type:`PyType_Spec` and :c:type:`PyType_Slot`:
+      The following fields cannot be set at all using :c:type:`PyType_Spec` and
+      :c:type:`PyType_Slot`:
 
       * :c:member:`~PyTypeObject.tp_dict`
       * :c:member:`~PyTypeObject.tp_mro`
@@ -194,12 +251,22 @@ The following functions and structs are used to create
       * :c:member:`~PyTypeObject.tp_dictoffset`
         (see :ref:`PyMemberDef <pymemberdef-offsets>`)
       * :c:member:`~PyTypeObject.tp_vectorcall_offset`
+        (see :ref:`PyMemberDef <pymemberdef-offsets>`)
+
+      The following fields cannot be set using :c:type:`PyType_Spec` and
+      :c:type:`PyType_Slot` under the limited API:
+
       * :c:member:`~PyBufferProcs.bf_getbuffer`
       * :c:member:`~PyBufferProcs.bf_releasebuffer`
 
-      Setting :c:data:`Py_tp_bases` may be problematic on some platforms.
+      Setting :c:data:`Py_tp_bases` or :c:data:`Py_tp_base` may be
+      problematic on some platforms.
       To avoid issues, use the *bases* argument of
       :py:func:`PyType_FromSpecWithBases` instead.
+
+     .. versionchanged:: 3.9
+
+        Slots in :c:type:`PyBufferProcs` in may be set in the unlimited API.
 
    .. c:member:: void *PyType_Slot.pfunc
 

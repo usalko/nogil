@@ -74,7 +74,7 @@ typedef struct {
  * The library is free for all purposes without any express
  * guarantee it works.
  *
- * Tom St Denis, tomstdenis@gmail.com, http://libtom.org
+ * Tom St Denis, tomstdenis@gmail.com, https://www.libtom.net
  */
 
 /* rotate the hard way (platform optimizations could be done) */
@@ -119,7 +119,7 @@ typedef struct {
     a = (a + I(b,c,d) + M + t); a = ROLc(a, s) + b;
 
 
-static void md5_compress(struct md5_state *md5, unsigned char *buf)
+static void md5_compress(struct md5_state *md5, const unsigned char *buf)
 {
     MD5_INT32 i, W[16], a, b, c, d;
 
@@ -242,7 +242,7 @@ md5_process(struct md5_state *md5, const unsigned char *in, Py_ssize_t inlen)
 
     while (inlen > 0) {
         if (md5->curlen == 0 && inlen >= MD5_BLOCKSIZE) {
-           md5_compress(md5, (unsigned char *)in);
+           md5_compress(md5, in);
            md5->length    += MD5_BLOCKSIZE * 8;
            in             += MD5_BLOCKSIZE;
            inlen          -= MD5_BLOCKSIZE;
@@ -551,9 +551,6 @@ static struct PyMethodDef MD5_functions[] = {
 
 
 /* Initialize this module. */
-
-#define insint(n,v) { PyModule_AddIntConstant(m,n,v); }
-
 
 static struct PyModuleDef _md5module = {
         PyModuleDef_HEAD_INIT,

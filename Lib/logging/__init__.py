@@ -118,7 +118,7 @@ _nameToLevel = {
 
 def getLevelName(level):
     """
-    Return the textual representation of logging level 'level'.
+    Return the textual or numeric representation of logging level 'level'.
 
     If the level is one of the predefined levels (CRITICAL, ERROR, WARNING,
     INFO, DEBUG) then you get the corresponding string. If you have
@@ -128,7 +128,11 @@ def getLevelName(level):
     If a numeric value corresponding to one of the defined levels is passed
     in, the corresponding string representation is returned.
 
-    Otherwise, the string "Level %s" % level is returned.
+    If a string representation of the level is passed in, the corresponding
+    numeric value is returned.
+
+    If no matching numeric or string value is passed in, the string
+    'Level %s' % level is returned.
     """
     # See Issues #22386, #27937 and #29220 for why it's this way
     result = _levelToName.get(level)
@@ -234,11 +238,9 @@ if not hasattr(os, 'register_at_fork'):  # Windows and friends.
     def _register_at_fork_reinit_lock(instance):
         pass  # no-op when os.register_at_fork does not exist.
 else:
-    # A collection of instances with a createLock method (logging.Handler)
+    # A collection of instances with a _at_fork_reinit method (logging.Handler)
     # to be called in the child after forking.  The weakref avoids us keeping
-    # discarded Handler instances alive.  A set is used to avoid accumulating
-    # duplicate registrations as createLock() is responsible for registering
-    # a new Handler instance with this set in the first place.
+    # discarded Handler instances alive.
     _at_fork_reinit_lock_weakset = weakref.WeakSet()
 
     def _register_at_fork_reinit_lock(instance):
@@ -249,16 +251,12 @@ else:
             _releaseLock()
 
     def _after_at_fork_child_reinit_locks():
-        # _acquireLock() was called in the parent before forking.
         for handler in _at_fork_reinit_lock_weakset:
-            try:
-                handler.createLock()
-            except Exception as err:
-                # Similar to what PyErr_WriteUnraisable does.
-                print("Ignoring exception from logging atfork", instance,
-                      "._reinit_lock() method:", err, file=sys.stderr)
-        _releaseLock()  # Acquired by os.register_at_fork(before=.
+            handler._at_fork_reinit()
 
+        # _acquireLock() was called in the parent before forking.
+        # The lock is reinitialized to unlocked state.
+        _lock._at_fork_reinit()
 
     os.register_at_fork(before=_acquireLock,
                         after_in_child=_after_at_fork_child_reinit_locks,
@@ -515,7 +513,7 @@ class Formatter(object):
     responsible for converting a LogRecord to (usually) a string which can
     be interpreted by either a human or an external system. The base Formatter
     allows a formatting string to be specified. If none is supplied, the
-    the style-dependent default value, "%(message)s", "{message}", or
+    style-dependent default value, "%(message)s", "{message}", or
     "${message}", is used.
 
     The Formatter can be initialized with a format string which makes use of
@@ -603,8 +601,9 @@ class Formatter(object):
         if datefmt:
             s = time.strftime(datefmt, ct)
         else:
-            t = time.strftime(self.default_time_format, ct)
-            s = self.default_msec_format % (t, record.msecs)
+            s = time.strftime(self.default_time_format, ct)
+            if self.default_msec_format:
+                s = self.default_msec_format % (s, record.msecs)
         return s
 
     def formatException(self, ei):
@@ -753,8 +752,8 @@ class Filter(object):
         """
         Determine if the specified record is to be logged.
 
-        Is the specified record to be logged? Returns 0 for no, nonzero for
-        yes. If deemed appropriate, the record may be modified in-place.
+        Returns True if the record should be logged, or False otherwise.
+        If deemed appropriate, the record may be modified in-place.
         """
         if self.nlen == 0:
             return True
@@ -890,6 +889,9 @@ class Handler(Filterer):
         """
         self.lock = threading.RLock()
         _register_at_fork_reinit_lock(self)
+
+    def _at_fork_reinit(self):
+        self.lock._at_fork_reinit()
 
     def acquire(self):
         """
@@ -1270,6 +1272,14 @@ class Manager(object):
         self.loggerDict = {}
         self.loggerClass = None
         self.logRecordFactory = None
+
+    @property
+    def disable(self):
+        return self._disable
+
+    @disable.setter
+    def disable(self, value):
+        self._disable = _checkLevel(value)
 
     def getLogger(self, name):
         """
@@ -2167,6 +2177,9 @@ class NullHandler(Handler):
 
     def createLock(self):
         self.lock = None
+
+    def _at_fork_reinit(self):
+        pass
 
 # Warnings integration
 

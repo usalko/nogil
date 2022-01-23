@@ -132,6 +132,7 @@ library which are implemented in C; each one builds a DLL (renamed to
 _asyncio
 _ctypes
 _ctypes_test
+_zoneinfo
 _decimal
 _elementtree
 _hashlib
@@ -165,7 +166,7 @@ _lzma
     Homepage:
         http://tukaani.org/xz/
 _ssl
-    Python wrapper for version 1.1.1c of the OpenSSL secure sockets
+    Python wrapper for version 1.1.1k of the OpenSSL secure sockets
     library, which is downloaded from our binaries repository at
     https://github.com/python/cpython-bin-deps.
 
@@ -184,7 +185,7 @@ _ssl
     again when building.
 
 _sqlite3
-    Wraps SQLite 3.28.0.0, which is itself built by sqlite3.vcxproj
+    Wraps SQLite 3.35.5, which is itself built by sqlite3.vcxproj
     Homepage:
         http://www.sqlite.org/
 _tkinter

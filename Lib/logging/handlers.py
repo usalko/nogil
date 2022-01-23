@@ -185,14 +185,17 @@ class RotatingFileHandler(BaseRotatingHandler):
         Basically, see if the supplied record would cause the file to exceed
         the size limit we have.
         """
+        # See bpo-45401: Never rollover anything other than regular files
+        if os.path.exists(self.baseFilename) and not os.path.isfile(self.baseFilename):
+            return False
         if self.stream is None:                 # delay was set...
             self.stream = self._open()
         if self.maxBytes > 0:                   # are we rolling over?
             msg = "%s\n" % self.format(record)
             self.stream.seek(0, 2)  #due to non-posix-compliant Windows feature
             if self.stream.tell() + len(msg) >= self.maxBytes:
-                return 1
-        return 0
+                return True
+        return False
 
 class TimedRotatingFileHandler(BaseRotatingHandler):
     """
@@ -342,10 +345,13 @@ class TimedRotatingFileHandler(BaseRotatingHandler):
         record is not used, as we are just comparing times, but it is needed so
         the method signatures are the same
         """
+        # See bpo-45401: Never rollover anything other than regular files
+        if os.path.exists(self.baseFilename) and not os.path.isfile(self.baseFilename):
+            return False
         t = int(time.time())
         if t >= self.rolloverAt:
-            return 1
-        return 0
+            return True
+        return False
 
     def getFilesToDelete(self):
         """
@@ -356,13 +362,19 @@ class TimedRotatingFileHandler(BaseRotatingHandler):
         dirName, baseName = os.path.split(self.baseFilename)
         fileNames = os.listdir(dirName)
         result = []
-        prefix = baseName + "."
+        # See bpo-44753: Don't use the extension when computing the prefix.
+        prefix = os.path.splitext(baseName)[0] + "."
         plen = len(prefix)
         for fileName in fileNames:
             if fileName[:plen] == prefix:
                 suffix = fileName[plen:]
-                if self.extMatch.match(suffix):
-                    result.append(os.path.join(dirName, fileName))
+                # See bpo-45628: The date/time suffix could be anywhere in the
+                # filename
+                parts = suffix.split('.')
+                for part in parts:
+                    if self.extMatch.match(part):
+                        result.append(os.path.join(dirName, fileName))
+                        break
         if len(result) < self.backupCount:
             result = []
         else:
@@ -1173,6 +1185,20 @@ class HTTPHandler(logging.Handler):
         """
         return record.__dict__
 
+    def getConnection(self, host, secure):
+        """
+        get a HTTP[S]Connection.
+
+        Override when a custom connection is required, for example if
+        there is a proxy.
+        """
+        import http.client
+        if secure:
+            connection = http.client.HTTPSConnection(host, context=self.context)
+        else:
+            connection = http.client.HTTPConnection(host)
+        return connection
+
     def emit(self, record):
         """
         Emit a record.
@@ -1180,12 +1206,9 @@ class HTTPHandler(logging.Handler):
         Send the record to the Web server as a percent-encoded dictionary
         """
         try:
-            import http.client, urllib.parse
+            import urllib.parse
             host = self.host
-            if self.secure:
-                h = http.client.HTTPSConnection(host, context=self.context)
-            else:
-                h = http.client.HTTPConnection(host)
+            h = self.getConnection(host, self.secure)
             url = self.url
             data = urllib.parse.urlencode(self.mapLogRecord(record))
             if self.method == "GET":
@@ -1313,7 +1336,11 @@ class MemoryHandler(BufferingHandler):
         """
         Set the target handler for this handler.
         """
-        self.target = target
+        self.acquire()
+        try:
+            self.target = target
+        finally:
+            self.release()
 
     def flush(self):
         """

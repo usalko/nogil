@@ -35,7 +35,7 @@ Abstract Grammar
 The abstract grammar is currently defined as follows:
 
 .. literalinclude:: ../../Parser/Python.asdl
-   :language: none
+   :language: asdl
 
 
 Node classes
@@ -80,10 +80,11 @@ Node classes
                   end_col_offset
 
       Instances of :class:`ast.expr` and :class:`ast.stmt` subclasses have
-      :attr:`lineno`, :attr:`col_offset`, :attr:`lineno`, and :attr:`col_offset`
-      attributes.  The :attr:`lineno` and :attr:`end_lineno` are the first and
-      last line numbers of source text span (1-indexed so the first line is line 1)
-      and the :attr:`col_offset` and :attr:`end_col_offset` are the corresponding
+      :attr:`lineno`, :attr:`col_offset`, :attr:`end_lineno`, and
+      :attr:`end_col_offset` attributes.  The :attr:`lineno` and
+      :attr:`end_lineno` are the first and last line numbers of the source
+      text span (1-indexed so the first line is line 1), and the
+      :attr:`col_offset` and :attr:`end_col_offset` are the corresponding
       UTF-8 byte offsets of the first and last tokens that generated the node.
       The UTF-8 offset is recorded because the parser uses UTF-8 internally.
 
@@ -139,6 +140,11 @@ Node classes
    In the meantime, instantiating them will return an instance of
    a different class.
 
+.. note::
+    The descriptions of the specific node classes displayed here
+    were initially adapted from the fantastic `Green Tree
+    Snakes <https://greentreesnakes.readthedocs.io/en/latest/>`__ project and
+    all its contributors.
 
 Literals
 ^^^^^^^^
@@ -1247,7 +1253,7 @@ Function and class definitions
    A function definition.
 
    * ``name`` is a raw string of the function name.
-   * ``args`` is a :class:`arguments` node.
+   * ``args`` is an :class:`arguments` node.
    * ``body`` is the list of nodes inside the function.
    * ``decorator_list`` is the list of decorators to be applied, stored outermost
      first (i.e. the first in the list will be applied last).
@@ -1421,7 +1427,7 @@ Function and class definitions
    * ``bases`` is a list of nodes for explicitly specified base classes.
    * ``keywords`` is a list of :class:`keyword` nodes, principally for 'metaclass'.
      Other keywords will be passed to the metaclass, as per `PEP-3115
-     <http://www.python.org/dev/peps/pep-3115/>`_.
+     <https://www.python.org/dev/peps/pep-3115/>`_.
    * ``starargs`` and ``kwargs`` are each a single node, as in a function call.
      starargs will be expanded to join the list of base classes, and kwargs will
      be passed to the metaclass.
@@ -1503,6 +1509,13 @@ Async and await
    fields as :class:`For` and :class:`With`, respectively. Only valid in the
    body of an :class:`AsyncFunctionDef`.
 
+.. note::
+   When a string is parsed by :func:`ast.parse`, operator nodes (subclasses
+   of :class:`ast.operator`, :class:`ast.unaryop`, :class:`ast.cmpop`,
+   :class:`ast.boolop` and :class:`ast.expr_context`) on the returned tree
+   will be singletons. Changes to one will be reflected in all other
+   occurrences of the same value (e.g. :class:`ast.Add`).
+
 
 :mod:`ast` Helpers
 ------------------
@@ -1536,6 +1549,19 @@ and classes for traversing abstract syntax trees:
    ``await`` as variable names.  The lowest supported version is
    ``(3, 4)``; the highest is ``sys.version_info[0:2]``.
 
+   If source contains a null character ('\0'), :exc:`ValueError` is raised.
+
+    .. warning::
+      Note that successfully parsing source code into an AST object doesn't
+      guarantee that the source code provided is valid Python code that can
+      be executed as the compilation step can raise further :exc:`SyntaxError`
+      exceptions. For instance, the source ``return 42`` generates a valid
+      AST node for a return statement, but it cannot be compiled alone (it needs
+      to be inside a function node).
+
+      In particular, :func:`ast.parse` won't do any scoping checks, which the
+      compilation step does.
+
    .. warning::
       It is possible to crash the Python interpreter with a
       sufficiently large/complex string due to stack depth limitations
@@ -1553,7 +1579,12 @@ and classes for traversing abstract syntax trees:
 
    .. warning::
       The produced code string will not necessarily be equal to the original
-      code that generated the :class:`ast.AST` object.
+      code that generated the :class:`ast.AST` object (without any compiler
+      optimizations, such as constant tuples/frozensets).
+
+   .. warning::
+      Trying to unparse a highly complex expression would result with
+      :exc:`RecursionError`.
 
    .. versionadded:: 3.9
 
@@ -1704,7 +1735,7 @@ and classes for traversing abstract syntax trees:
                   value=Name(id='data', ctx=Load()),
                   slice=Constant(value=node.id),
                   ctx=node.ctx
-              ), node)
+              )
 
    Keep in mind that if the node you're operating on has child nodes you must
    either transform the child nodes yourself or call the :meth:`generic_visit`
@@ -1746,6 +1777,34 @@ and classes for traversing abstract syntax trees:
 
    .. versionchanged:: 3.9
       Added the *indent* option.
+
+
+.. _ast-compiler-flags:
+
+Compiler Flags
+--------------
+
+The following flags may be passed to :func:`compile` in order to change
+effects on the compilation of a program:
+
+.. data:: PyCF_ALLOW_TOP_LEVEL_AWAIT
+
+   Enables support for top-level ``await``, ``async for``, ``async with``
+   and async comprehensions.
+
+   .. versionadded:: 3.8
+
+.. data:: PyCF_ONLY_AST
+
+   Generates and returns an abstract syntax tree instead of returning a
+   compiled code object.
+
+.. data:: PyCF_TYPE_COMMENTS
+
+   Enables support for :pep:`484` and :pep:`526` style type comments
+   (``# type: <type>``, ``# type: ignore <stuff>``).
+
+   .. versionadded:: 3.8
 
 
 .. _ast-cli:
@@ -1795,5 +1854,24 @@ to stdout.  Otherwise, the content is read from stdin.
 
 .. seealso::
 
-    `Green Tree Snakes <https://greentreesnakes.readthedocs.io/>`_, an external documentation resource, has good
-    details on working with Python ASTs.
+    `Green Tree Snakes <https://greentreesnakes.readthedocs.io/>`_, an external
+    documentation resource, has good details on working with Python ASTs.
+
+    `ASTTokens <https://asttokens.readthedocs.io/en/latest/user-guide.html>`_
+    annotates Python ASTs with the positions of tokens and text in the source
+    code that generated them. This is helpful for tools that make source code
+    transformations.
+
+    `leoAst.py <http://leoeditor.com/appendices.html#leoast-py>`_ unifies the
+    token-based and parse-tree-based views of python programs by inserting
+    two-way links between tokens and ast nodes.
+
+    `LibCST <https://libcst.readthedocs.io/>`_ parses code as a Concrete Syntax
+    Tree that looks like an ast tree and keeps all formatting details. It's
+    useful for building automated refactoring (codemod) applications and
+    linters.
+
+    `Parso <https://parso.readthedocs.io>`_ is a Python parser that supports
+    error recovery and round-trip parsing for different Python versions (in
+    multiple Python versions). Parso is also able to list multiple syntax errors
+    in your python file.

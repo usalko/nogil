@@ -59,6 +59,7 @@ typedef struct {
     setentry *table;
     Py_hash_t hash;             /* Only used by frozenset objects */
     Py_ssize_t finger;          /* Search finger for pop() */
+    _PyMutex mutex;
 
     setentry smalltable[PySet_MINSIZE];
     PyObject *weakreflist;      /* List of weak references */
@@ -70,7 +71,6 @@ PyAPI_DATA(PyObject *) _PySet_Dummy;
 
 PyAPI_FUNC(int) _PySet_NextEntry(PyObject *set, Py_ssize_t *pos, PyObject **key, Py_hash_t *hash);
 PyAPI_FUNC(int) _PySet_Update(PyObject *set, PyObject *iterable);
-PyAPI_FUNC(int) PySet_ClearFreeList(void);
 
 #endif /* Section excluded by Py_LIMITED_API */
 
@@ -88,18 +88,18 @@ PyAPI_FUNC(int) PySet_Discard(PyObject *set, PyObject *key);
 PyAPI_FUNC(PyObject *) PySet_Pop(PyObject *set);
 PyAPI_FUNC(Py_ssize_t) PySet_Size(PyObject *anyset);
 
-#define PyFrozenSet_CheckExact(ob) (Py_TYPE(ob) == &PyFrozenSet_Type)
+#define PyFrozenSet_CheckExact(ob) Py_IS_TYPE(ob, &PyFrozenSet_Type)
 #define PyAnySet_CheckExact(ob) \
-    (Py_TYPE(ob) == &PySet_Type || Py_TYPE(ob) == &PyFrozenSet_Type)
+    (Py_IS_TYPE(ob, &PySet_Type) || Py_IS_TYPE(ob, &PyFrozenSet_Type))
 #define PyAnySet_Check(ob) \
-    (Py_TYPE(ob) == &PySet_Type || Py_TYPE(ob) == &PyFrozenSet_Type || \
+    (Py_IS_TYPE(ob, &PySet_Type) || Py_IS_TYPE(ob, &PyFrozenSet_Type) || \
       PyType_IsSubtype(Py_TYPE(ob), &PySet_Type) || \
       PyType_IsSubtype(Py_TYPE(ob), &PyFrozenSet_Type))
 #define PySet_Check(ob) \
-    (Py_TYPE(ob) == &PySet_Type || \
+    (Py_IS_TYPE(ob, &PySet_Type) || \
     PyType_IsSubtype(Py_TYPE(ob), &PySet_Type))
 #define   PyFrozenSet_Check(ob) \
-    (Py_TYPE(ob) == &PyFrozenSet_Type || \
+    (Py_IS_TYPE(ob, &PyFrozenSet_Type) || \
       PyType_IsSubtype(Py_TYPE(ob), &PyFrozenSet_Type))
 
 #ifdef __cplusplus

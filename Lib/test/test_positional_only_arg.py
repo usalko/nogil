@@ -431,18 +431,6 @@ class PositionalOnlyTestCase(unittest.TestCase):
 
         self.assertEqual(C().method(), sentinel)
 
-    @unittest.skip("sgross: constant folding")
-    def test_annotations_constant_fold(self):
-        def g():
-            def f(x: not (int is int), /): ...
-
-        # without constant folding we end up with
-        # COMPARE_OP(is), IS_OP (0)
-        # with constant folding we should expect a IS_OP (1)
-        codes = [(i.opname, i.argval) for i in dis.get_instructions(g)]
-        self.assertNotIn(('UNARY_NOT_FAST', None), codes)
-        self.assertIn(('IS_OP', 3), codes)
-
 
 if __name__ == "__main__":
     unittest.main()

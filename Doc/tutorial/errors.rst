@@ -53,7 +53,7 @@ programs, however, and result in error messages as shown here::
    >>> '2' + 2
    Traceback (most recent call last):
      File "<stdin>", line 1, in <module>
-   TypeError: Can't convert 'int' object to str implicitly
+   TypeError: can only concatenate str (not "int") to str
 
 The last line of the error message indicates what happened. Exceptions come in
 different types, and the type is printed as part of the message: the types in
@@ -67,7 +67,7 @@ The rest of the line provides detail based on the type of exception and what
 caused it.
 
 The preceding part of the error message shows the context where the exception
-happened, in the form of a stack traceback. In general it contains a stack
+occurred, in the form of a stack traceback. In general it contains a stack
 traceback listing source lines; however, it will not display lines read from
 standard input.
 
@@ -272,16 +272,16 @@ re-raise the exception::
 Exception Chaining
 ==================
 
-The :keyword:`raise` statement allows an optional :keyword:`from` which enables
-chaining exceptions by setting the ``__cause__`` attribute of the raised
-exception. For example::
+The :keyword:`raise` statement allows an optional :keyword:`from<raise>` which enables
+chaining exceptions. For example::
 
-    raise RuntimeError from OSError
+    # exc must be exception instance or None.
+    raise RuntimeError from exc
 
 This can be useful when you are transforming exceptions. For example::
 
     >>> def func():
-    ...    raise IOError
+    ...     raise IOError
     ...
     >>> try:
     ...     func()
@@ -297,21 +297,22 @@ This can be useful when you are transforming exceptions. For example::
     <BLANKLINE>
     Traceback (most recent call last):
       File "<stdin>", line 4, in <module>
-    RuntimeError
+    RuntimeError: Failed to open database
 
-The expression following the :keyword:`from` must be either an exception or
-``None``. Exception chaining happens automatically when an exception is raised
-inside an exception handler or :keyword:`finally` section. Exception chaining
-can be disabled by using ``from None`` idiom:
+Exception chaining happens automatically when an exception is raised inside an
+:keyword:`except` or :keyword:`finally` section. Exception chaining can be
+disabled by using ``from None`` idiom:
 
     >>> try:
     ...     open('database.sqlite')
-    ... except IOError:
+    ... except OSError:
     ...     raise RuntimeError from None
     ...
     Traceback (most recent call last):
       File "<stdin>", line 4, in <module>
     RuntimeError
+
+For more information about chaining mechanics, see :ref:`bltin-exceptions`.
 
 
 .. _tut-userexceptions:
@@ -403,6 +404,10 @@ points discuss more complex cases when an exception occurs:
 * An exception could occur during execution of an :keyword:`!except`
   or :keyword:`!else` clause. Again, the exception is re-raised after
   the :keyword:`!finally` clause has been executed.
+
+* If the :keyword:`!finally` clause executes a :keyword:`break`,
+  :keyword:`continue` or :keyword:`return` statement, exceptions are not
+  re-raised.
 
 * If the :keyword:`!try` statement reaches a :keyword:`break`,
   :keyword:`continue` or :keyword:`return` statement, the

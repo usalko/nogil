@@ -323,7 +323,7 @@ class _BasePurePathTest(object):
         self.assertFalse(P('b/py').match('b.py'))
         self.assertFalse(P('/a.py').match('b.py'))
         self.assertFalse(P('b.py/c').match('b.py'))
-        # Wilcard relative pattern.
+        # Wildcard relative pattern.
         self.assertTrue(P('b.py').match('*.py'))
         self.assertTrue(P('a/b.py').match('*.py'))
         self.assertTrue(P('/a/b.py').match('*.py'))
@@ -558,6 +558,23 @@ class _BasePurePathTest(object):
         self.assertRaises(ValueError, P('a/b').with_name, '/c')
         self.assertRaises(ValueError, P('a/b').with_name, 'c/')
         self.assertRaises(ValueError, P('a/b').with_name, 'c/d')
+
+    def test_with_stem_common(self):
+        P = self.cls
+        self.assertEqual(P('a/b').with_stem('d'), P('a/d'))
+        self.assertEqual(P('/a/b').with_stem('d'), P('/a/d'))
+        self.assertEqual(P('a/b.py').with_stem('d'), P('a/d.py'))
+        self.assertEqual(P('/a/b.py').with_stem('d'), P('/a/d.py'))
+        self.assertEqual(P('/a/b.tar.gz').with_stem('d'), P('/a/d.gz'))
+        self.assertEqual(P('a/Dot ending.').with_stem('d'), P('a/d'))
+        self.assertEqual(P('/a/Dot ending.').with_stem('d'), P('/a/d'))
+        self.assertRaises(ValueError, P('').with_stem, 'd')
+        self.assertRaises(ValueError, P('.').with_stem, 'd')
+        self.assertRaises(ValueError, P('/').with_stem, 'd')
+        self.assertRaises(ValueError, P('a/b').with_stem, '')
+        self.assertRaises(ValueError, P('a/b').with_stem, '/c')
+        self.assertRaises(ValueError, P('a/b').with_stem, 'c/')
+        self.assertRaises(ValueError, P('a/b').with_stem, 'c/d')
 
     def test_with_suffix_common(self):
         P = self.cls
@@ -1014,6 +1031,20 @@ class PureWindowsPathTest(_BasePurePathTest, unittest.TestCase):
         self.assertRaises(ValueError, P('c:a/b').with_name, 'd:/e')
         self.assertRaises(ValueError, P('c:a/b').with_name, '//My/Share')
 
+    def test_with_stem(self):
+        P = self.cls
+        self.assertEqual(P('c:a/b').with_stem('d'), P('c:a/d'))
+        self.assertEqual(P('c:/a/b').with_stem('d'), P('c:/a/d'))
+        self.assertEqual(P('c:a/Dot ending.').with_stem('d'), P('c:a/d'))
+        self.assertEqual(P('c:/a/Dot ending.').with_stem('d'), P('c:/a/d'))
+        self.assertRaises(ValueError, P('c:').with_stem, 'd')
+        self.assertRaises(ValueError, P('c:/').with_stem, 'd')
+        self.assertRaises(ValueError, P('//My/Share').with_stem, 'd')
+        self.assertRaises(ValueError, P('c:a/b').with_stem, 'd:')
+        self.assertRaises(ValueError, P('c:a/b').with_stem, 'd:e')
+        self.assertRaises(ValueError, P('c:a/b').with_stem, 'd:/e')
+        self.assertRaises(ValueError, P('c:a/b').with_stem, '//My/Share')
+
     def test_with_suffix(self):
         P = self.cls
         self.assertEqual(P('c:a/b').with_suffix('.gz'), P('c:a/b.gz'))
@@ -1217,19 +1248,35 @@ class PureWindowsPathTest(_BasePurePathTest, unittest.TestCase):
         self.assertIs(False, P('').is_reserved())
         self.assertIs(False, P('/').is_reserved())
         self.assertIs(False, P('/foo/bar').is_reserved())
-        self.assertIs(True, P('con').is_reserved())
-        self.assertIs(True, P('NUL').is_reserved())
-        self.assertIs(True, P('NUL.txt').is_reserved())
-        self.assertIs(True, P('com1').is_reserved())
-        self.assertIs(True, P('com9.bar').is_reserved())
-        self.assertIs(False, P('bar.com9').is_reserved())
-        self.assertIs(True, P('lpt1').is_reserved())
-        self.assertIs(True, P('lpt9.bar').is_reserved())
-        self.assertIs(False, P('bar.lpt9').is_reserved())
-        # Only the last component matters.
-        self.assertIs(False, P('c:/NUL/con/baz').is_reserved())
         # UNC paths are never reserved.
         self.assertIs(False, P('//my/share/nul/con/aux').is_reserved())
+        # Case-insensitive DOS-device names are reserved.
+        self.assertIs(True, P('nul').is_reserved())
+        self.assertIs(True, P('aux').is_reserved())
+        self.assertIs(True, P('prn').is_reserved())
+        self.assertIs(True, P('con').is_reserved())
+        self.assertIs(True, P('conin$').is_reserved())
+        self.assertIs(True, P('conout$').is_reserved())
+        # COM/LPT + 1-9 or + superscript 1-3 are reserved.
+        self.assertIs(True, P('COM1').is_reserved())
+        self.assertIs(True, P('LPT9').is_reserved())
+        self.assertIs(True, P('com\xb9').is_reserved())
+        self.assertIs(True, P('com\xb2').is_reserved())
+        self.assertIs(True, P('lpt\xb3').is_reserved())
+        # DOS-device name mataching ignores characters after a dot or
+        # a colon and also ignores trailing spaces.
+        self.assertIs(True, P('NUL.txt').is_reserved())
+        self.assertIs(True, P('PRN  ').is_reserved())
+        self.assertIs(True, P('AUX  .txt').is_reserved())
+        self.assertIs(True, P('COM1:bar').is_reserved())
+        self.assertIs(True, P('LPT9   :bar').is_reserved())
+        # DOS-device names are only matched at the beginning
+        # of a path component.
+        self.assertIs(False, P('bar.com9').is_reserved())
+        self.assertIs(False, P('bar.lpt9').is_reserved())
+        # Only the last path component matters.
+        self.assertIs(True, P('c:/baz/con/NUL').is_reserved())
+        self.assertIs(False, P('c:/NUL/con/baz').is_reserved())
 
 class PurePathTest(_BasePurePathTest, unittest.TestCase):
     cls = pathlib.PurePath
@@ -1595,6 +1642,42 @@ class _BasePathTest(object):
         self.assertEqual(set(p.glob("dirA/../file*")), { P(BASE, "dirA/../fileA") })
         self.assertEqual(set(p.glob("../xyzzy")), set())
 
+    @support.skip_unless_symlink
+    def test_glob_permissions(self):
+        # See bpo-38894
+        P = self.cls
+        base = P(BASE) / 'permissions'
+        base.mkdir()
+
+        file1 = base / "file1"
+        file1.touch()
+        file2 = base / "file2"
+        file2.touch()
+
+        subdir = base / "subdir"
+
+        file3 = base / "file3"
+        file3.symlink_to(subdir / "other")
+
+        # Patching is needed to avoid relying on the filesystem
+        # to return the order of the files as the error will not
+        # happen if the symlink is the last item.
+
+        with mock.patch("os.scandir") as scandir:
+            scandir.return_value = sorted(os.scandir(base))
+            self.assertEqual(len(set(base.glob("*"))), 3)
+
+        subdir.mkdir()
+
+        with mock.patch("os.scandir") as scandir:
+            scandir.return_value = sorted(os.scandir(base))
+            self.assertEqual(len(set(base.glob("*"))), 4)
+
+        subdir.chmod(000)
+
+        with mock.patch("os.scandir") as scandir:
+            scandir.return_value = sorted(os.scandir(base))
+            self.assertEqual(len(set(base.glob("*"))), 4)
 
     def _check_resolve(self, p, expected, strict=True):
         q = p.resolve(strict)
@@ -1684,13 +1767,15 @@ class _BasePathTest(object):
         next(it2)
         with p:
             pass
-        # I/O operation on closed path.
-        self.assertRaises(ValueError, next, it)
-        self.assertRaises(ValueError, next, it2)
-        self.assertRaises(ValueError, p.open)
-        self.assertRaises(ValueError, p.resolve)
-        self.assertRaises(ValueError, p.absolute)
-        self.assertRaises(ValueError, p.__enter__)
+        # Using a path as a context manager is a no-op, thus the following
+        # operations should still succeed after the context manage exits.
+        next(it)
+        next(it2)
+        p.exists()
+        p.resolve()
+        p.absolute()
+        with p:
+            pass
 
     def test_chmod(self):
         p = self.cls(BASE) / 'fileA'
@@ -2277,6 +2362,15 @@ class PosixPathTest(_BasePathTest, unittest.TestCase):
             pass
         st = os.stat(join('other_new_file'))
         self.assertEqual(stat.S_IMODE(st.st_mode), 0o644)
+
+    def test_resolve_root(self):
+        current_directory = os.getcwd()
+        try:
+            os.chdir('/')
+            p = self.cls('spam')
+            self.assertEqual(str(p.resolve()), '/spam')
+        finally:
+            os.chdir(current_directory)
 
     def test_touch_mode(self):
         old_mask = os.umask(0)

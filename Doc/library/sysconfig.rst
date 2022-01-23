@@ -32,7 +32,7 @@ can be accessed using :func:`get_config_vars` or :func:`get_config_var`.
 
 Notice that on Windows, it's a much smaller set.
 
-.. function:: get_config_vars(\*args)
+.. function:: get_config_vars(*args)
 
    With no arguments, return a dictionary of all configuration variables
    relevant for the current platform.
@@ -74,12 +74,12 @@ places.
 
 Python currently supports seven schemes:
 
-- *posix_prefix*: scheme for Posix platforms like Linux or Mac OS X.  This is
+- *posix_prefix*: scheme for POSIX platforms like Linux or macOS.  This is
   the default scheme used when Python or a component is installed.
-- *posix_home*: scheme for Posix platforms used when a *home* option is used
+- *posix_home*: scheme for POSIX platforms used when a *home* option is used
   upon installation.  This scheme is used when a component is installed through
   Distutils with a specific home prefix.
-- *posix_user*: scheme for Posix platforms used when a component is installed
+- *posix_user*: scheme for POSIX platforms used when a component is installed
   through Distutils and the *user* option is used.  This scheme defines paths
   located under the user home directory.
 - *nt*: scheme for NT platforms like Windows.
@@ -138,7 +138,7 @@ identifier.  Python currently uses eight paths:
    If *expand* is set to ``False``, the path will not be expanded using the
    variables.
 
-   If *name* is not found, return ``None``.
+   If *name* is not found, raise a :exc:`KeyError`.
 
 
 .. function:: get_paths([scheme, [vars, [expand]]])
@@ -188,7 +188,7 @@ Other functions
    - win-amd64 (64bit Windows on AMD64, aka x86_64, Intel64, and EM64T)
    - win32 (all others - specifically, sys.platform is returned)
 
-   Mac OS X can return:
+   macOS can return:
 
    - macosx-10.6-ppc
    - macosx-10.4-ppc64

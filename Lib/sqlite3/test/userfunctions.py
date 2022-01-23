@@ -1,8 +1,7 @@
-#-*- coding: iso-8859-1 -*-
 # pysqlite2/test/userfunctions.py: tests for user-defined functions and
 #                                  aggregates.
 #
-# Copyright (C) 2005-2007 Gerhard Häring <gh@ghaering.de>
+# Copyright (C) 2005-2007 Gerhard HÃ¤ring <gh@ghaering.de>
 #
 # This file is part of pysqlite.
 #
@@ -28,6 +27,8 @@ import sqlite3 as sqlite
 
 def func_returntext():
     return "foo"
+def func_returntextwithnull():
+    return "1\x002"
 def func_returnunicode():
     return "bar"
 def func_returnint():
@@ -138,11 +139,21 @@ class AggrSum:
     def finalize(self):
         return self.val
 
+class AggrText:
+    def __init__(self):
+        self.txt = ""
+    def step(self, txt):
+        self.txt = self.txt + txt
+    def finalize(self):
+        return self.txt
+
+
 class FunctionTests(unittest.TestCase):
     def setUp(self):
         self.con = sqlite.connect(":memory:")
 
         self.con.create_function("returntext", 0, func_returntext)
+        self.con.create_function("returntextwithnull", 0, func_returntextwithnull)
         self.con.create_function("returnunicode", 0, func_returnunicode)
         self.con.create_function("returnint", 0, func_returnint)
         self.con.create_function("returnfloat", 0, func_returnfloat)
@@ -158,6 +169,7 @@ class FunctionTests(unittest.TestCase):
         self.con.create_function("isblob", 1, func_isblob)
         self.con.create_function("islonglong", 1, func_islonglong)
         self.con.create_function("spam", -1, func)
+        self.con.execute("create table test(t text)")
 
     def tearDown(self):
         self.con.close()
@@ -184,6 +196,12 @@ class FunctionTests(unittest.TestCase):
         val = cur.fetchone()[0]
         self.assertEqual(type(val), str)
         self.assertEqual(val, "foo")
+
+    def CheckFuncReturnTextWithNullChar(self):
+        cur = self.con.cursor()
+        res = cur.execute("select returntextwithnull()").fetchone()[0]
+        self.assertEqual(type(res), str)
+        self.assertEqual(res, "1\x002")
 
     def CheckFuncReturnUnicode(self):
         cur = self.con.cursor()
@@ -236,9 +254,11 @@ class FunctionTests(unittest.TestCase):
 
     def CheckParamString(self):
         cur = self.con.cursor()
-        cur.execute("select isstring(?)", ("foo",))
-        val = cur.fetchone()[0]
-        self.assertEqual(val, 1)
+        for text in ["foo", str()]:
+            with self.subTest(text=text):
+                cur.execute("select isstring(?)", (text,))
+                val = cur.fetchone()[0]
+                self.assertEqual(val, 1)
 
     def CheckParamInt(self):
         cur = self.con.cursor()
@@ -276,18 +296,36 @@ class FunctionTests(unittest.TestCase):
         val = cur.fetchone()[0]
         self.assertEqual(val, 2)
 
+    # Regarding deterministic functions:
+    #
+    # Between 3.8.3 and 3.15.0, deterministic functions were only used to
+    # optimize inner loops, so for those versions we can only test if the
+    # sqlite machinery has factored out a call or not. From 3.15.0 and onward,
+    # deterministic functions were permitted in WHERE clauses of partial
+    # indices, which allows testing based on syntax, iso. the query optimizer.
+    @unittest.skipIf(sqlite.sqlite_version_info < (3, 8, 3), "Requires SQLite 3.8.3 or higher")
     def CheckFuncNonDeterministic(self):
         mock = unittest.mock.Mock(return_value=None)
-        self.con.create_function("deterministic", 0, mock, deterministic=False)
-        self.con.execute("select deterministic() = deterministic()")
-        self.assertEqual(mock.call_count, 2)
+        self.con.create_function("nondeterministic", 0, mock, deterministic=False)
+        if sqlite.sqlite_version_info < (3, 15, 0):
+            self.con.execute("select nondeterministic() = nondeterministic()")
+            self.assertEqual(mock.call_count, 2)
+        else:
+            with self.assertRaises(sqlite.OperationalError):
+                self.con.execute("create index t on test(t) where nondeterministic() is not null")
 
-    @unittest.skipIf(sqlite.sqlite_version_info < (3, 8, 3), "deterministic parameter not supported")
+    @unittest.skipIf(sqlite.sqlite_version_info < (3, 8, 3), "Requires SQLite 3.8.3 or higher")
     def CheckFuncDeterministic(self):
         mock = unittest.mock.Mock(return_value=None)
         self.con.create_function("deterministic", 0, mock, deterministic=True)
-        self.con.execute("select deterministic() = deterministic()")
-        self.assertEqual(mock.call_count, 1)
+        if sqlite.sqlite_version_info < (3, 15, 0):
+            self.con.execute("select deterministic() = deterministic()")
+            self.assertEqual(mock.call_count, 1)
+        else:
+            try:
+                self.con.execute("create index t on test(t) where deterministic() is not null")
+            except sqlite.OperationalError:
+                self.fail("Unexpected failure while creating partial index")
 
     @unittest.skipIf(sqlite.sqlite_version_info >= (3, 8, 3), "SQLite < 3.8.3 needed")
     def CheckFuncDeterministicNotSupported(self):
@@ -323,6 +361,7 @@ class AggregateTests(unittest.TestCase):
         self.con.create_aggregate("checkType", 2, AggrCheckType)
         self.con.create_aggregate("checkTypes", -1, AggrCheckTypes)
         self.con.create_aggregate("mysum", 1, AggrSum)
+        self.con.create_aggregate("aggtxt", 1, AggrText)
 
     def tearDown(self):
         #self.cur.close()
@@ -369,9 +408,9 @@ class AggregateTests(unittest.TestCase):
 
     def CheckAggrCheckParamStr(self):
         cur = self.con.cursor()
-        cur.execute("select checkType('str', ?)", ("foo",))
+        cur.execute("select checkTypes('str', ?, ?)", ("foo", str()))
         val = cur.fetchone()[0]
-        self.assertEqual(val, 1)
+        self.assertEqual(val, 2)
 
     def CheckAggrCheckParamInt(self):
         cur = self.con.cursor()
@@ -410,6 +449,15 @@ class AggregateTests(unittest.TestCase):
         cur.execute("select mysum(i) from test")
         val = cur.fetchone()[0]
         self.assertEqual(val, 60)
+
+    def CheckAggrText(self):
+        cur = self.con.cursor()
+        for txt in ["foo", "1\x002"]:
+            with self.subTest(txt=txt):
+                cur.execute("select aggtxt(?) from test", (txt,))
+                val = cur.fetchone()[0]
+                self.assertEqual(val, txt)
+
 
 class AuthorizerTests(unittest.TestCase):
     @staticmethod

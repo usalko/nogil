@@ -699,6 +699,15 @@ exit:
     return return_value;
 }
 
+PyDoc_STRVAR(sys_mergerefcount__doc__,
+"mergerefcount($module, object, /)\n"
+"--\n"
+"\n"
+"Merges the local and shared reference counts of an object.");
+
+#define SYS_MERGEREFCOUNT_METHODDEF    \
+    {"mergerefcount", (PyCFunction)sys_mergerefcount, METH_O, sys_mergerefcount__doc__},
+
 PyDoc_STRVAR(sys_getfullrefcount__doc__,
 "getfullrefcount($module, object, /)\n"
 "--\n"
@@ -707,23 +716,38 @@ PyDoc_STRVAR(sys_getfullrefcount__doc__,
 "\n"
 "The count returned is generally one higher than you might expect,\n"
 "because it includes the (temporary) reference as an argument to\n"
-"getrefcount().");
+"getfullrefcount().");
 
 #define SYS_GETFULLREFCOUNT_METHODDEF    \
     {"getfullrefcount", (PyCFunction)sys_getfullrefcount, METH_O, sys_getfullrefcount__doc__},
 
-PyDoc_STRVAR(sys_mergerefcount__doc__,
-"mergerefcount($module, object, /)\n"
+PyDoc_STRVAR(sys_gettypeid__doc__,
+"gettypeid($module, object, /)\n"
 "--\n"
 "\n"
-"Return the reference count of object.\n"
-"\n"
-"The count returned is generally one higher than you might expect,\n"
-"because it includes the (temporary) reference as an argument to\n"
-"getrefcount().");
+"Gets the internal id of a type");
 
-#define SYS_MERGEREFCOUNT_METHODDEF    \
-    {"mergerefcount", (PyCFunction)sys_mergerefcount, METH_O, sys_mergerefcount__doc__},
+#define SYS_GETTYPEID_METHODDEF    \
+    {"gettypeid", (PyCFunction)sys_gettypeid, METH_O, sys_gettypeid__doc__},
+
+static Py_ssize_t
+sys_gettypeid_impl(PyObject *module, PyObject *object);
+
+static PyObject *
+sys_gettypeid(PyObject *module, PyObject *object)
+{
+    PyObject *return_value = NULL;
+    Py_ssize_t _return_value;
+
+    _return_value = sys_gettypeid_impl(module, object);
+    if ((_return_value == -1) && PyErr_Occurred()) {
+        goto exit;
+    }
+    return_value = PyLong_FromSsize_t(_return_value);
+
+exit:
+    return return_value;
+}
 
 #if defined(Py_REF_DEBUG)
 
@@ -1014,4 +1038,4 @@ sys_getandroidapilevel(PyObject *module, PyObject *Py_UNUSED(ignored))
 #ifndef SYS_GETANDROIDAPILEVEL_METHODDEF
     #define SYS_GETANDROIDAPILEVEL_METHODDEF
 #endif /* !defined(SYS_GETANDROIDAPILEVEL_METHODDEF) */
-/*[clinic end generated code: output=2473e46bb3dd4ebd input=a9049054013a1b77]*/
+/*[clinic end generated code: output=3b79a977fada4ec9 input=a9049054013a1b77]*/

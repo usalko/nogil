@@ -129,7 +129,7 @@ class _AttributeHolder(object):
         return '%s(%s)' % (type_name, ', '.join(arg_strings))
 
     def _get_kwargs(self):
-        return sorted(self.__dict__.items())
+        return list(self.__dict__.items())
 
     def _get_args(self):
         return []
@@ -526,12 +526,13 @@ class HelpFormatter(object):
         parts = [action_header]
 
         # if there was help for the action, add lines of help text
-        if action.help:
+        if action.help and action.help.strip():
             help_text = self._expand_help(action)
-            help_lines = self._split_lines(help_text, help_width)
-            parts.append('%*s%s\n' % (indent_first, '', help_lines[0]))
-            for line in help_lines[1:]:
-                parts.append('%*s%s\n' % (help_position, '', line))
+            if help_text:
+                help_lines = self._split_lines(help_text, help_width)
+                parts.append('%*s%s\n' % (indent_first, '', help_lines[0]))
+                for line in help_lines[1:]:
+                    parts.append('%*s%s\n' % (help_position, '', line))
 
         # or add a newline if the description doesn't end with one
         elif not action_header.endswith('\n'):
@@ -727,6 +728,8 @@ def _get_action_name(argument):
         return argument.metavar
     elif argument.dest not in (None, SUPPRESS):
         return argument.dest
+    elif argument.choices:
+        return '{' + ','.join(argument.choices) + '}'
     else:
         return None
 
@@ -857,7 +860,6 @@ class BooleanOptionalAction(Action):
     def __init__(self,
                  option_strings,
                  dest,
-                 const=None,
                  default=None,
                  type=None,
                  choices=None,
@@ -874,7 +876,7 @@ class BooleanOptionalAction(Action):
                 _option_strings.append(option_string)
 
         if help is not None and default is not None:
-            help += f" (default: {default})"
+            help += " (default: %(default)s)"
 
         super().__init__(
             option_strings=_option_strings,
@@ -2199,24 +2201,23 @@ class ArgumentParser(_AttributeHolder, _ActionsContainer):
                 action = self._option_string_actions[option_string]
                 return action, option_string, explicit_arg
 
-        if self.allow_abbrev or not arg_string.startswith('--'):
-            # search through all possible prefixes of the option string
-            # and all actions in the parser for possible interpretations
-            option_tuples = self._get_option_tuples(arg_string)
+        # search through all possible prefixes of the option string
+        # and all actions in the parser for possible interpretations
+        option_tuples = self._get_option_tuples(arg_string)
 
-            # if multiple actions match, the option string was ambiguous
-            if len(option_tuples) > 1:
-                options = ', '.join([option_string
-                    for action, option_string, explicit_arg in option_tuples])
-                args = {'option': arg_string, 'matches': options}
-                msg = _('ambiguous option: %(option)s could match %(matches)s')
-                self.error(msg % args)
+        # if multiple actions match, the option string was ambiguous
+        if len(option_tuples) > 1:
+            options = ', '.join([option_string
+                for action, option_string, explicit_arg in option_tuples])
+            args = {'option': arg_string, 'matches': options}
+            msg = _('ambiguous option: %(option)s could match %(matches)s')
+            self.error(msg % args)
 
-            # if exactly one action matched, this segmentation is good,
-            # so return the parsed action
-            elif len(option_tuples) == 1:
-                option_tuple, = option_tuples
-                return option_tuple
+        # if exactly one action matched, this segmentation is good,
+        # so return the parsed action
+        elif len(option_tuples) == 1:
+            option_tuple, = option_tuples
+            return option_tuple
 
         # if it was not found as an option, but it looks like a negative
         # number, it was meant to be positional
@@ -2240,16 +2241,17 @@ class ArgumentParser(_AttributeHolder, _ActionsContainer):
         # split at the '='
         chars = self.prefix_chars
         if option_string[0] in chars and option_string[1] in chars:
-            if '=' in option_string:
-                option_prefix, explicit_arg = option_string.split('=', 1)
-            else:
-                option_prefix = option_string
-                explicit_arg = None
-            for option_string in self._option_string_actions:
-                if option_string.startswith(option_prefix):
-                    action = self._option_string_actions[option_string]
-                    tup = action, option_string, explicit_arg
-                    result.append(tup)
+            if self.allow_abbrev:
+                if '=' in option_string:
+                    option_prefix, explicit_arg = option_string.split('=', 1)
+                else:
+                    option_prefix = option_string
+                    explicit_arg = None
+                for option_string in self._option_string_actions:
+                    if option_string.startswith(option_prefix):
+                        action = self._option_string_actions[option_string]
+                        tup = action, option_string, explicit_arg
+                        result.append(tup)
 
         # single character options can be concatenated with their arguments
         # but multiple character options always have to have their argument

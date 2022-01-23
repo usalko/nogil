@@ -2,10 +2,10 @@
 /* Module object implementation */
 
 #include "Python.h"
+#include "pycore_interp.h"        // PyInterpreterState.importlib
 #include "pycore_object.h"
-#include "pycore_pystate.h"
-#include "structmember.h"
-#include "pyatomic.h"
+#include "pycore_pystate.h"       // _PyInterpreterState_GET()
+#include "structmember.h"         // PyMemberDef
 
 static intptr_t max_module_number;
 
@@ -20,7 +20,7 @@ typedef struct {
     void *md_state;
     PyObject *md_weaklist;
     PyObject *md_name;  /* for logging purposes after md_dict is cleared */
-    int32_t md_initialized;
+    int md_initialized;
 } PyModuleObject;
 
 static PyMemberDef module_members[] = {
@@ -28,16 +28,6 @@ static PyMemberDef module_members[] = {
     {0}
 };
 
-
-/* Helper for sanity check for traverse not handling m_state == NULL
- * Issue #32374 */
-#ifdef Py_DEBUG
-static int
-bad_traverse_test(PyObject *self, void *arg) {
-    assert(self != NULL);
-    return 0;
-}
-#endif
 
 PyTypeObject PyModuleDef_Type = {
     PyVarObject_HEAD_INIT(&PyType_Type, 0)
@@ -53,13 +43,9 @@ PyModuleDef_Init(struct PyModuleDef* def)
     if (PyType_Ready(&PyModuleDef_Type) < 0)
          return NULL;
     if (def->m_base.m_index == 0) {
-        if (!_PyObject_IS_IMMORTAL((PyObject*) def)) {
-            // e.g. pybind11 modules
-            Py_SET_REFCNT(def, 1);
-        }
+        assert(_PyObject_IS_IMMORTAL((PyObject*) def));
         Py_SET_TYPE(def, &PyModuleDef_Type);
-        def->m_base.m_index =
-            (Py_ssize_t)_Py_atomic_add_intptr(&max_module_number, 1) + 1;
+        def->m_base.m_index = _Py_atomic_add_ssize(&max_module_number, 1) + 1;
     }
     return (PyObject*)def;
 }
@@ -69,7 +55,7 @@ _PyModule_IsInitialized(PyObject *self)
 {
     assert(PyModule_Check(self));
     PyModuleObject *mod = (PyModuleObject*)self;
-    return _Py_atomic_load_int32(&mod->md_initialized);
+    return _Py_atomic_load_int(&mod->md_initialized);
 }
 
 void
@@ -77,7 +63,7 @@ _PyModule_SetInitialized(PyObject *self, int initialized)
 {
     assert(PyModule_Check(self));
     PyModuleObject *mod = (PyModuleObject*)self;
-    return _Py_atomic_store_int32(&mod->md_initialized, initialized);
+    return _Py_atomic_store_int(&mod->md_initialized, initialized);
 }
 
 static int
@@ -127,16 +113,23 @@ PyModule_NewObject(PyObject *name)
     m = PyObject_GC_New(PyModuleObject, &PyModule_Type);
     if (m == NULL)
         return NULL;
-    _PyObject_SET_DEFERRED_RC((PyObject *)m);
+    if (PyUnicode_CheckExact(name)) {
+        Py_INCREF(name);
+        PyUnicode_InternInPlace(&name);
+        Py_DECREF(name);
+    }
     m->md_def = NULL;
     m->md_state = NULL;
     m->md_weaklist = NULL;
     m->md_name = NULL;
     m->md_dict = PyDict_New();
+    m->md_initialized = 1;
     if (module_init_dict(m, m->md_dict, name, NULL) != 0)
         goto fail;
     _PyObject_SET_DEFERRED_RC(m->md_dict);
     PyObject_GC_Track(m);
+    _PyObject_SET_DEFERRED_RC(m);
+    _PyObject_SET_DEFERRED_RC(m->md_dict);
     return (PyObject *)m;
 
  fail:
@@ -148,7 +141,7 @@ PyObject *
 PyModule_New(const char *name)
 {
     PyObject *nameobj, *module;
-    nameobj = PyUnicode_FromString(name);
+    nameobj = PyUnicode_InternFromString(name);
     if (nameobj == NULL)
         return NULL;
     module = PyModule_NewObject(nameobj);
@@ -208,7 +201,7 @@ _add_methods_to_object(PyObject *module, PyObject *name, PyMethodDef *functions)
 PyObject *
 PyModule_Create2(struct PyModuleDef* module, int module_api_version)
 {
-    if (!_PyImport_IsInitialized(_PyInterpreterState_Get())) {
+    if (!_PyImport_IsInitialized(_PyInterpreterState_GET())) {
         PyErr_SetString(PyExc_SystemError,
                         "Python import machinery not initialized");
         return NULL;
@@ -395,16 +388,6 @@ PyModule_FromDefAndSpec2(struct PyModuleDef* def, PyObject *spec, int module_api
         }
     }
 
-    /* Sanity check for traverse not handling m_state == NULL
-     * This doesn't catch all possible cases, but in many cases it should
-     * make many cases of invalid code crash or raise Valgrind issues
-     * sooner than they would otherwise.
-     * Issue #32374 */
-#ifdef Py_DEBUG
-    if (def->m_traverse != NULL) {
-        def->m_traverse(m, bad_traverse_test, NULL);
-    }
-#endif
     Py_DECREF(nameobj);
     return m;
 
@@ -627,7 +610,7 @@ _PyModule_ClearDict(PyObject *d)
     Py_ssize_t pos;
     PyObject *key, *value;
 
-    int verbose = _PyInterpreterState_GET_UNSAFE()->config.verbose;
+    int verbose = _Py_GetConfig()->verbose;
 
     /* First, clear only names starting with a single underscore */
     pos = 0;
@@ -714,7 +697,7 @@ module___init___impl(PyModuleObject *self, PyObject *name, PyObject *doc)
 static void
 module_dealloc(PyModuleObject *m)
 {
-    int verbose = _PyInterpreterState_GET_UNSAFE()->config.verbose;
+    int verbose = _Py_GetConfig()->verbose;
 
     PyObject_GC_UnTrack(m);
     if (verbose && m->md_name) {
@@ -722,8 +705,12 @@ module_dealloc(PyModuleObject *m)
     }
     if (m->md_weaklist != NULL)
         PyObject_ClearWeakRefs((PyObject *) m);
-    if (m->md_def && m->md_def->m_free)
+    /* bpo-39824: Don't call m_free() if m_size > 0 and md_state=NULL */
+    if (m->md_def && m->md_def->m_free
+        && (m->md_def->m_size <= 0 || m->md_state != NULL))
+    {
         m->md_def->m_free(m);
+    }
     Py_XDECREF(m->md_dict);
     Py_XDECREF(m->md_name);
     if (m->md_state != NULL)
@@ -734,7 +721,7 @@ module_dealloc(PyModuleObject *m)
 static PyObject *
 module_repr(PyModuleObject *m)
 {
-    PyInterpreterState *interp = _PyInterpreterState_Get();
+    PyInterpreterState *interp = _PyInterpreterState_GET();
 
     return PyObject_CallMethod(interp->importlib, "_module_repr", "O", m);
 }
@@ -759,6 +746,7 @@ _PyModuleSpec_IsInitializing(PyObject *spec)
     PyErr_Clear();
     return 0;
 }
+
 
 PyObject *
 _PyModule_MissingAttr(PyObject *m, PyObject *name)
@@ -816,7 +804,10 @@ module_getattro(PyObject *m, PyObject *name)
 static int
 module_traverse(PyModuleObject *m, visitproc visit, void *arg)
 {
-    if (m->md_def && m->md_def->m_traverse) {
+    /* bpo-39824: Don't call m_traverse() if m_size > 0 and md_state=NULL */
+    if (m->md_def && m->md_def->m_traverse
+        && (m->md_def->m_size <= 0 || m->md_state != NULL))
+    {
         int res = m->md_def->m_traverse((PyObject*)m, visit, arg);
         if (res)
             return res;
@@ -828,7 +819,10 @@ module_traverse(PyModuleObject *m, visitproc visit, void *arg)
 static int
 module_clear(PyModuleObject *m)
 {
-    if (m->md_def && m->md_def->m_clear) {
+    /* bpo-39824: Don't call m_clear() if m_size > 0 and md_state=NULL */
+    if (m->md_def && m->md_def->m_clear
+        && (m->md_def->m_size <= 0 || m->md_state != NULL))
+    {
         int res = m->md_def->m_clear((PyObject*)m);
         if (PyErr_Occurred()) {
             PySys_FormatStderr("Exception ignored in m_clear of module%s%V\n",

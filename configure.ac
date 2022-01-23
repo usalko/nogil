@@ -1,6 +1,9 @@
-dnl ***********************************************
-dnl * Please run autoreconf to test your changes! *
-dnl ***********************************************
+dnl ***************************************************
+dnl * Please run autoreconf -if to test your changes! *
+dnl ***************************************************
+dnl
+dnl Python's configure script requires autoconf 2.69 and autoconf-archive.
+dnl
 
 # Set VERSION so we only need to edit in one place (i.e., here)
 m4_define(PYTHON_VERSION, 3.9)
@@ -9,7 +12,11 @@ AC_PREREQ([2.69])
 
 AC_INIT([python],[PYTHON_VERSION],[https://bugs.python.org/])
 
-AC_CONFIG_MACRO_DIR(m4)
+m4_ifdef(
+    [AX_C_FLOAT_WORDS_BIGENDIAN],
+    [],
+    [AC_MSG_ERROR([Please install autoconf-archive package and re-run autoreconf])]
+)
 
 AC_SUBST(BASECPPFLAGS)
 if test "$srcdir" != . -a "$srcdir" != "$(pwd)"; then
@@ -215,12 +222,14 @@ then
 fi
 
 AC_SUBST(LIPO_32BIT_FLAGS)
+AC_SUBST(LIPO_INTEL64_FLAGS)
 AC_MSG_CHECKING(for --with-universal-archs)
 AC_ARG_WITH(universal-archs,
     AS_HELP_STRING([--with-universal-archs=ARCH],
-                   [specify the kind of universal binary that should be created. this option is
-                    only valid when --enable-universalsdk is set; options are:
-                    ("universal2", "32-bit", "64-bit", "3-way", "intel", "intel-32", "intel-64", or "all")
+                   [specify the kind of macOS universal binary that should be created.
+                    This option is only valid when --enable-universalsdk is set; options are:
+                    ("universal2", "intel-64", "intel-32", "intel", "32-bit",
+                    "64-bit", "3-way", or "all")
                     see Mac/README.rst]),
 [
 	UNIVERSAL_ARCHS="$withval"
@@ -535,6 +544,12 @@ case $ac_sys_system/$ac_sys_release in
     define_xopen_source=no
     ;;
 
+  # On HP-UX, defining _XOPEN_SOURCE to 600 or greater hides
+  # chroot() and other functions
+  hp*|HP*)
+    define_xopen_source=no
+    ;;
+
 esac
 
 if test $define_xopen_source = yes
@@ -714,9 +729,6 @@ then
 fi
 
 
-MULTIARCH=$($CC --print-multiarch 2>/dev/null)
-AC_SUBST(MULTIARCH)
-
 AC_MSG_CHECKING([for the platform triplet based on compiler characteristics])
 cat >> conftest.c <<EOF
 #undef bfin
@@ -872,6 +884,11 @@ else
 fi
 rm -f conftest.c conftest.out
 
+if test x$PLATFORM_TRIPLET != xdarwin; then
+  MULTIARCH=$($CC --print-multiarch 2>/dev/null)
+fi
+AC_SUBST(MULTIARCH)
+
 if test x$PLATFORM_TRIPLET != x && test x$MULTIARCH != x; then
   if test x$PLATFORM_TRIPLET != x$MULTIARCH; then
     AC_MSG_ERROR([internal configure error for the platform triplet, please file a bug report])
@@ -1020,21 +1037,12 @@ LDVERSION="$VERSION"
 # If CXX is set, and if it is needed to link a main function that was
 # compiled with CXX, LINKCC is CXX instead. Always using CXX is undesirable:
 # python might then depend on the C++ runtime
-# This is altered for AIX in order to build the export list before
-# linking.
 AC_SUBST(LINKCC)
 AC_MSG_CHECKING(LINKCC)
 if test -z "$LINKCC"
 then
 	LINKCC='$(PURIFY) $(MAINCC)'
 	case $ac_sys_system in
-	AIX*)
-	   exp_extra="\"\""
-	   if test $ac_sys_release -ge 5 -o \
-		   $ac_sys_release -eq 4 -a `uname -r` -ge 2 ; then
-	       exp_extra="."
-	   fi
-	   LINKCC="\$(srcdir)/Modules/makexp_aix Modules/python.exp $exp_extra \$(LIBRARY); $LINKCC";;
 	QNX*)
 	   # qcc must be used because the other compilers do not
 	   # support -N.
@@ -1042,6 +1050,24 @@ then
 	esac
 fi
 AC_MSG_RESULT($LINKCC)
+
+# EXPORTSYMS holds the list of exported symbols for AIX.
+# EXPORTSFROM holds the module name exporting symbols on AIX.
+EXPORTSYMS=
+EXPORTSFROM=
+AC_SUBST(EXPORTSYMS)
+AC_SUBST(EXPORTSFROM)
+AC_MSG_CHECKING(EXPORTSYMS)
+case $ac_sys_system in
+AIX*)
+	EXPORTSYMS="Modules/python.exp"
+	if test $ac_sys_release -ge 5 -o \
+		$ac_sys_release -eq 4 -a `uname -r` -ge 2 ; then
+	    EXPORTSFROM=. # the main executable
+	fi
+	;;
+esac
+AC_MSG_RESULT($EXPORTSYMS)
 
 # GNULD is set to "yes" if the GNU linker is used.  If this goes wrong
 # make sure we default having it set to "no": this is used by
@@ -1223,6 +1249,10 @@ if test -z "$LN" ; then
 	esac
 fi
 
+# nogil release version
+AC_SUBST(NOGIL_VERSION)
+NOGIL_VERSION="b"
+
 # For calculating the .so ABI tag.
 AC_SUBST(ABIFLAGS)
 ABIFLAGS=""
@@ -1245,18 +1275,18 @@ fi],
 
 # Check for --with-trace-refs
 # --with-trace-refs
-AC_MSG_CHECKING(for --with-trace-refs)
-AC_ARG_WITH(trace-refs,
-  AS_HELP_STRING(
-    [--with-trace-refs],
-    [enable tracing references for debugging purpose (default is no)]),,
-  with_trace_refs=no)
-AC_MSG_RESULT($with_trace_refs)
-
-if test "$with_trace_refs" = "yes"
-then
-  AC_DEFINE(Py_TRACE_REFS, 1, [Define if you want to enable tracing references for debugging purpose])
-fi
+# AC_MSG_CHECKING(for --with-trace-refs)
+# AC_ARG_WITH(trace-refs,
+#   AS_HELP_STRING(
+#     [--with-trace-refs],
+#     [enable tracing references for debugging purpose (default is no)]),,
+#   with_trace_refs=no)
+# AC_MSG_RESULT($with_trace_refs)
+#
+# if test "$with_trace_refs" = "yes"
+# then
+#   AC_DEFINE(Py_TRACE_REFS, 1, [Define if you want to enable tracing references for debugging purpose])
+# fi
 
 # Check for --with-assertions.
 # This allows enabling assertions without Py_DEBUG.
@@ -1366,10 +1396,11 @@ if test "$Py_LTO" = 'true' ; then
       fi
       if test "$ac_sys_system" = "Darwin" -a "${LLVM_AR_FOUND}" = "not-found"
       then
-        found_llvm_ar=`/usr/bin/xcrun -find llvm-ar 2>/dev/null`
+        # The Apple-supplied ar in Xcode or the Command Line Tools is apparently sufficient
+        found_llvm_ar=`/usr/bin/xcrun -find ar 2>/dev/null`
         if test -n "${found_llvm_ar}"
         then
-          LLVM_AR='/usr/bin/xcrun llvm-ar'
+          LLVM_AR='/usr/bin/xcrun ar'
           LLVM_AR_FOUND=found
           AC_MSG_NOTICE([llvm-ar found via xcrun: ${LLVM_AR}])
         fi
@@ -1386,6 +1417,7 @@ if test "$Py_LTO" = 'true' ; then
         Darwin*)
           # Any changes made here should be reflected in the GCC+Darwin case below
           LTOFLAGS="-flto -Wl,-export_dynamic"
+          LTOCFLAGS="-flto"
           ;;
         *)
           LTOFLAGS="-flto"
@@ -1396,6 +1428,7 @@ if test "$Py_LTO" = 'true' ; then
       case $ac_sys_system in
         Darwin*)
           LTOFLAGS="-flto -Wl,-export_dynamic"
+          LTOCFLAGS="-flto"
           ;;
         *)
           LTOFLAGS="-flto -fuse-linker-plugin -ffat-lto-objects -flto-partition=none"
@@ -1411,7 +1444,7 @@ if test "$Py_LTO" = 'true' ; then
       LTOFLAGS="$LTOFLAGS -g"
   fi
 
-  CFLAGS_NODIST="$CFLAGS_NODIST $LTOFLAGS"
+  CFLAGS_NODIST="$CFLAGS_NODIST ${LTOCFLAGS-$LTOFLAGS}"
   LDFLAGS_NODIST="$LDFLAGS_NODIST $LTOFLAGS"
 fi
 
@@ -1857,6 +1890,7 @@ yes)
             AC_MSG_RESULT($CC)
         fi
 
+        LIPO_INTEL64_FLAGS=""
         if test "${enable_universalsdk}"
         then
             case "$UNIVERSAL_ARCHS" in
@@ -1878,8 +1912,9 @@ yes)
             universal2)
                UNIVERSAL_ARCH_FLAGS="-arch arm64 -arch x86_64"
                LIPO_32BIT_FLAGS=""
+               LIPO_INTEL64_FLAGS="-extract x86_64"
                ARCH_RUN_32BIT="true"
-		;;
+               ;;
             intel)
                UNIVERSAL_ARCH_FLAGS="-arch i386 -arch x86_64"
                LIPO_32BIT_FLAGS="-extract i386"
@@ -1968,6 +2003,13 @@ yes)
         EXPORT_MACOSX_DEPLOYMENT_TARGET=''
         AC_MSG_RESULT($MACOSX_DEPLOYMENT_TARGET)
 
+        AC_MSG_CHECKING(if specified universal architectures work)
+        AC_LINK_IFELSE([AC_LANG_PROGRAM([[#include <stdio.h>]], [[printf("%d", 42);]])],
+            [AC_MSG_RESULT(yes)],
+            [AC_MSG_RESULT(no)
+             AC_MSG_ERROR(check config.log and use the '--with-universal-archs' option)
+        ])
+
         # end of Darwin* tests
         ;;
     esac
@@ -1985,10 +2027,13 @@ yes)
     ;;
 esac
 
-# ICC needs -fp-model strict or floats behave badly
 case "$CC" in
 *icc*)
+    # ICC needs -fp-model strict or floats behave badly
     CFLAGS_NODIST="$CFLAGS_NODIST -fp-model strict"
+    ;;
+*xlc*)
+    CFLAGS_NODIST="$CFLAGS_NODIST -qalias=noansi -qmaxmem=-1"
     ;;
 esac
 
@@ -2237,8 +2282,8 @@ AC_CHECK_HEADERS(linux/vm_sockets.h,,,[
 #endif
 ])
 
-# On Linux, can.h and can/raw.h require sys/socket.h
-AC_CHECK_HEADERS(linux/can.h linux/can/raw.h linux/can/bcm.h,,,[
+# On Linux, can.h, can/bcm.h, can/j1939.h, can/raw.h require sys/socket.h
+AC_CHECK_HEADERS(linux/can.h linux/can/bcm.h linux/can/j1939.h linux/can/raw.h,,,[
 #ifdef HAVE_SYS_SOCKET_H
 #include <sys/socket.h>
 #endif
@@ -2834,8 +2879,13 @@ void *x = uuid_generate_time_safe
   [AC_MSG_RESULT(no)]
 )
 
+# check for libuuid from util-linux
+save_LIBS=$LIBS
+AC_CHECK_LIB([uuid], [uuid_generate_time])
+LIBS=$save_LIBS
+
 # AIX provides support for RFC4122 (uuid) in libc.a starting with AIX 6.1 (anno 2007)
-# FreeBSD and OpenBSD provides support as well
+# FreeBSD and OpenBSD provides support in libc as well.
 AC_MSG_CHECKING(for uuid_create)
 AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <uuid.h>]], [[
 #ifndef uuid_create
@@ -2950,6 +3000,42 @@ esac
 ],
 [AC_MSG_RESULT(default)])
 
+validate_tzpath() {
+    # Checks that each element of hte path is an absolute path
+    if test -z "$1"; then
+        # Empty string is allowed: it indicates no system TZPATH
+        return 0
+    fi
+
+    # Bad paths are those that don't start with /
+    dnl quadrigraphs "@<:@" and "@:>@" produce "[" and "]" in the output
+    if ( echo $1 | grep -qE '(^|:)(@<:@^/@:>@|$)' ); then
+        AC_MSG_ERROR([--with-tzpath must contain only absolute paths, not $1])
+        return 1;
+    fi
+}
+
+TZPATH="/usr/share/zoneinfo:/usr/lib/zoneinfo:/usr/share/lib/zoneinfo:/etc/zoneinfo"
+AC_MSG_CHECKING(for --with-tzpath)
+AC_ARG_WITH(tzpath,
+            AS_HELP_STRING([--with-tzpath=<list of absolute paths separated by pathsep>]
+                           [Select the default time zone search path for zoneinfo.TZPATH]),
+[
+case "$withval" in
+    yes)
+        AC_MSG_ERROR([--with-tzpath requires a value])
+        ;;
+    *)
+        validate_tzpath "$withval"
+        TZPATH="$withval"
+        AC_MSG_RESULT("$withval")
+        ;;
+esac
+],
+[validate_tzpath "$TZPATH"
+ AC_MSG_RESULT("$TZPATH")])
+AC_SUBST(TZPATH)
+
 AC_MSG_CHECKING(for --with-address-sanitizer)
 AC_ARG_WITH(address_sanitizer,
             AS_HELP_STRING([--with-address-sanitizer],
@@ -3053,6 +3139,21 @@ AC_ARG_WITH(system_libmpdec,
             [with_system_libmpdec="no"])
 
 AC_MSG_RESULT($with_system_libmpdec)
+
+# Check whether _decimal should use a coroutine-local or thread-local context
+AC_MSG_CHECKING(for --with-decimal-contextvar)
+AC_ARG_WITH(decimal_contextvar,
+            AS_HELP_STRING([--with-decimal-contextvar], [build _decimal module using a coroutine-local rather than a thread-local context (default is yes)]),
+            [],
+            [with_decimal_contextvar="yes"])
+
+if test "$with_decimal_contextvar" != "no"
+then
+    AC_DEFINE(WITH_DECIMAL_CONTEXTVAR, 1,
+      [Define if you want build the _decimal module using a coroutine-local rather than a thread-local context])
+fi
+
+AC_MSG_RESULT($with_decimal_contextvar)
 
 # Check for support for loadable sqlite extensions
 AC_MSG_CHECKING(for --enable-loadable-sqlite-extensions)
@@ -3239,10 +3340,10 @@ if test "$posix_threads" = "yes"; then
       main() {
         pthread_attr_t attr;
         pthread_t id;
-        if (pthread_attr_init(&attr)) exit(-1);
-        if (pthread_attr_setscope(&attr, PTHREAD_SCOPE_SYSTEM)) exit(-1);
-        if (pthread_create(&id, &attr, foo, NULL)) exit(-1);
-        exit(0);
+        if (pthread_attr_init(&attr)) return (-1);
+        if (pthread_attr_setscope(&attr, PTHREAD_SCOPE_SYSTEM)) return (-1);
+        if (pthread_create(&id, &attr, foo, NULL)) return (-1);
+        return (0);
       }]])],
       [ac_cv_pthread_system_supported=yes],
       [ac_cv_pthread_system_supported=no],
@@ -3436,6 +3537,16 @@ AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[ /* CAN_RAW_FD_FRAMES available check */
   AC_MSG_RESULT(no)
 ])
 
+AC_MSG_CHECKING(for CAN_RAW_JOIN_FILTERS)
+AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
+#include <linux/can/raw.h>]],
+[[int can_raw_join_filters = CAN_RAW_JOIN_FILTERS;]])],[
+  AC_DEFINE(HAVE_LINUX_CAN_RAW_JOIN_FILTERS, 1, [Define if compiling using Linux 4.1 or later.])
+  AC_MSG_RESULT(yes)
+],[
+  AC_MSG_RESULT(no)
+])
+
 # Check for --with-doc-strings
 AC_MSG_CHECKING(for --with-doc-strings)
 AC_ARG_WITH(doc-strings,
@@ -3530,7 +3641,7 @@ then
         [ac_cv_dtrace_link], [dnl
             ac_cv_dtrace_link=no
             echo 'BEGIN{}' > conftest.d
-            "$DTRACE" "$DFLAGS" -G -s conftest.d -o conftest.o > /dev/null 2>&1 && \
+            "$DTRACE" $DFLAGS -G -s conftest.d -o conftest.o > /dev/null 2>&1 && \
                 ac_cv_dtrace_link=yes
       ])
     if test "$ac_cv_dtrace_link" = "yes"; then
@@ -3609,7 +3720,7 @@ AC_CHECK_FUNCS(alarm accept4 setitimer getitimer bind_textdomain_codeset chown \
  posix_fallocate posix_fadvise posix_spawn posix_spawnp pread preadv preadv2 \
  pthread_condattr_setclock pthread_init pthread_kill pwrite pwritev pwritev2 \
  readlink readlinkat readv realpath renameat \
- sem_open sem_timedwait sem_getvalue sem_unlink sendfile setegid seteuid \
+ sem_open sem_timedwait sem_clockwait sem_getvalue sem_unlink sendfile setegid seteuid \
  setgid sethostname \
  setlocale setregid setreuid setresuid setresgid setsid setpgid setpgrp setpriority setuid setvbuf \
  sched_get_priority_max sched_setaffinity sched_setscheduler sched_setparam \
@@ -4641,7 +4752,7 @@ then
   int main()
   {
 	/* Success: exit code 0 */
-        exit((((wchar_t) -1) < ((wchar_t) 0)) ? 0 : 1);
+        return ((((wchar_t) -1) < ((wchar_t) 0)) ? 0 : 1);
   }
   ]])],
   [ac_cv_wchar_t_signed=yes],
@@ -4663,6 +4774,22 @@ then
 else
   AC_MSG_RESULT(no)
 fi
+
+case $ac_sys_system/$ac_sys_release in
+SunOS/*)
+  if test -f /etc/os-release; then
+    OS_NAME=$(awk -F= '/^NAME=/ {print substr($2,2,length($2)-2)}' /etc/os-release)
+    if test "x$OS_NAME" = "xOracle Solaris"; then
+      # bpo-43667: In Oracle Solaris, the internal form of wchar_t in
+      # non-Unicode locales is not Unicode and hence cannot be used directly.
+      # https://docs.oracle.com/cd/E37838_01/html/E61053/gmwke.html
+      AC_DEFINE(HAVE_NON_UNICODE_WCHAR_T_REPRESENTATION, 1,
+      [Define if the internal form of wchar_t in non-Unicode locales
+       is not Unicode.])
+    fi
+  fi
+  ;;
+esac
 
 # check for endianness
 AC_C_BIGENDIAN
@@ -4686,25 +4813,20 @@ AC_SUBST(SOABI)
 AC_MSG_CHECKING(ABIFLAGS)
 AC_MSG_RESULT($ABIFLAGS)
 AC_MSG_CHECKING(SOABI)
-SOABI='nogil-'`echo $VERSION | tr -d .`${ABIFLAGS}${PLATFORM_TRIPLET:+-$PLATFORM_TRIPLET}
+SOABI='nogil-'`echo $VERSION | tr -d .`${NOGIL_VERSION}${ABIFLAGS}${PLATFORM_TRIPLET:+-$PLATFORM_TRIPLET}
 AC_MSG_RESULT($SOABI)
 
 # Release and debug (Py_DEBUG) ABI are compatible, but not Py_TRACE_REFS ABI
 if test "$Py_DEBUG" = 'true' -a "$with_trace_refs" != "yes"; then
   # Similar to SOABI but remove "d" flag from ABIFLAGS
   AC_SUBST(ALT_SOABI)
-  ALT_SOABI='nogil-'`echo $VERSION | tr -d .``echo $ABIFLAGS | tr -d d`${PLATFORM_TRIPLET:+-$PLATFORM_TRIPLET}
+  ALT_SOABI='nogil-'`echo $VERSION | tr -d .`${NOGIL_VERSION}`echo $ABIFLAGS | tr -d d`${PLATFORM_TRIPLET:+-$PLATFORM_TRIPLET}
   AC_DEFINE_UNQUOTED(ALT_SOABI, "${ALT_SOABI}",
             [Alternative SOABI used in debug build to load C extensions built in release mode])
 fi
 
 AC_SUBST(EXT_SUFFIX)
-case $ac_sys_system in
-    Linux*|GNU*|Darwin|VxWorks)
-	EXT_SUFFIX=.${SOABI}${SHLIB_SUFFIX};;
-    *)
-	EXT_SUFFIX=${SHLIB_SUFFIX};;
-esac
+EXT_SUFFIX=.${SOABI}${SHLIB_SUFFIX}
 
 AC_MSG_CHECKING(LDVERSION)
 LDVERSION='$(VERSION)$(ABIFLAGS)'
@@ -4718,12 +4840,41 @@ else
   LIBPYTHON=''
 fi
 
+
+AC_SUBST(BINLIBDEST)
+BINLIBDEST='$(LIBDIR)/python$(VERSION)'
+
+
+# Check for --with-platlibdir
+# /usr/$LIDIRNAME/python$VERSION
+AC_SUBST(PLATLIBDIR)
+PLATLIBDIR="lib"
+AC_MSG_CHECKING(for --with-platlibdir)
+AC_ARG_WITH(platlibdir,
+            AS_HELP_STRING([--with-platlibdir=DIRNAME],
+            [Python library directory name (default is "lib")]),
+[
+# ignore 3 options:
+#   --with-platlibdir
+#   --with-platlibdir=
+#   --without-platlibdir
+if test -n "$withval" -a "$withval" != yes -a "$withval" != no
+then
+  AC_MSG_RESULT(yes)
+  PLATLIBDIR="$withval"
+  BINLIBDEST='${exec_prefix}/${PLATLIBDIR}/python$(VERSION)'
+else
+  AC_MSG_RESULT(no)
+fi],
+[AC_MSG_RESULT(no)])
+
+
 dnl define LIBPL after ABIFLAGS and LDVERSION is defined.
 AC_SUBST(PY_ENABLE_SHARED)
 if test x$PLATFORM_TRIPLET = x; then
-  LIBPL='$(prefix)'"/lib/python${VERSION}/config-${LDVERSION}"
+  LIBPL='$(prefix)'"/${PLATLIBDIR}/python${VERSION}/config-${LDVERSION}"
 else
-  LIBPL='$(prefix)'"/lib/python${VERSION}/config-${LDVERSION}-${PLATFORM_TRIPLET}"
+  LIBPL='$(prefix)'"/${PLATLIBDIR}/python${VERSION}/config-${LDVERSION}-${PLATFORM_TRIPLET}"
 fi
 AC_SUBST(LIBPL)
 
@@ -4734,7 +4885,7 @@ AC_CACHE_VAL(ac_cv_rshift_extends_sign, [
 AC_RUN_IFELSE([AC_LANG_SOURCE([[
 int main()
 {
-	exit(((-1)>>3 == -1) ? 0 : 1);
+	return (((-1)>>3 == -1) ? 0 : 1);
 }
 ]])],
 [ac_cv_rshift_extends_sign=yes],
@@ -4881,6 +5032,7 @@ AC_MSG_CHECKING(for broken poll())
 AC_CACHE_VAL(ac_cv_broken_poll,
 AC_RUN_IFELSE([AC_LANG_SOURCE([[
 #include <poll.h>
+#include <unistd.h>
 
 int main()
 {
@@ -5358,7 +5510,7 @@ do
 done
 
 AC_SUBST(SRCDIRS)
-SRCDIRS="Parser Objects Objects/mimalloc Python Modules Modules/_io Programs"
+SRCDIRS="Parser Parser/pegen Objects Python Modules Modules/_io Programs"
 AC_MSG_CHECKING(for build directories)
 for dir in $SRCDIRS; do
     if test ! -d $dir; then
@@ -5678,6 +5830,31 @@ AC_MSG_RESULT(python)
 AC_DEFINE(PY_SSL_DEFAULT_CIPHERS, 1)
 ])
 
+# builtin hash modules
+default_hashlib_hashes="md5,sha1,sha256,sha512,sha3,blake2"
+AC_DEFINE([PY_BUILTIN_HASHLIB_HASHES], [], [enabled builtin hash modules]
+)
+AC_MSG_CHECKING(for --with-builtin-hashlib-hashes)
+AC_ARG_WITH(builtin-hashlib-hashes,
+            AS_HELP_STRING([--with-builtin-hashlib-hashes=md5,sha1,sha256,sha512,sha3,blake2],
+                           [builtin hash modules,
+                            md5, sha1, sha256, sha512, sha3 (with shake), blake2]),
+[
+case "$withval" in
+    yes)
+        withval=$default_hashlib_hashes
+        ;;
+    no)
+        withval=""
+        ;;
+esac
+AC_MSG_RESULT($withval)
+AC_DEFINE_UNQUOTED(PY_BUILTIN_HASHLIB_HASHES, "$withval")
+],
+[
+AC_MSG_RESULT($default_hashlib_hashes);
+AC_DEFINE_UNQUOTED(PY_BUILTIN_HASHLIB_HASHES, "$default_hashlib_hashes")
+])
 
 # generate output files
 AC_CONFIG_FILES(Makefile.pre Misc/python.pc Misc/python-embed.pc Misc/python-config.sh)

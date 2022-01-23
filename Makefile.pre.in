@@ -103,7 +103,6 @@ PY_CPPFLAGS=	$(BASECPPFLAGS) -I. -I$(srcdir)/Include $(CONFIGURE_CPPFLAGS) $(CPP
 PY_LDFLAGS=	$(CONFIGURE_LDFLAGS) $(LDFLAGS)
 PY_LDFLAGS_NODIST=$(CONFIGURE_LDFLAGS_NODIST) $(LDFLAGS_NODIST)
 NO_AS_NEEDED=	@NO_AS_NEEDED@
-SGI_ABI=	@SGI_ABI@
 CCSHARED=	@CCSHARED@
 # LINKFORSHARED are the flags passed to the $(CC) command that links
 # the python executable -- this is only needed for a few systems
@@ -143,11 +142,12 @@ LIBDIR=		@libdir@
 MANDIR=		@mandir@
 INCLUDEDIR=	@includedir@
 CONFINCLUDEDIR=	$(exec_prefix)/include
-SCRIPTDIR=	$(prefix)/lib
+PLATLIBDIR=	@PLATLIBDIR@
+SCRIPTDIR=	$(prefix)/$(PLATLIBDIR)
 ABIFLAGS=	@ABIFLAGS@
 
 # Detailed destination directories
-BINLIBDEST=	$(LIBDIR)/python$(VERSION)
+BINLIBDEST=	@BINLIBDEST@
 LIBDEST=	$(SCRIPTDIR)/python$(VERSION)
 INCLUDEPY=	$(INCLUDEDIR)/python$(LDVERSION)
 CONFINCLUDEPY=	$(CONFINCLUDEDIR)/python$(LDVERSION)
@@ -159,6 +159,10 @@ LDSHARED=	@LDSHARED@ $(PY_LDFLAGS)
 BLDSHARED=	@BLDSHARED@ $(PY_CORE_LDFLAGS)
 LDCXXSHARED=	@LDCXXSHARED@
 DESTSHARED=	$(BINLIBDEST)/lib-dynload
+
+# List of exported symbols for AIX
+EXPORTSYMS=	@EXPORTSYMS@
+EXPORTSFROM=	@EXPORTSFROM@
 
 # Executable suffix (.exe on Windows and Mac OS X)
 EXE=		@EXEEXT@
@@ -182,6 +186,9 @@ STRIPFLAG=-s
 # Flags to lipo to produce a 32-bit-only universal executable
 LIPO_32BIT_FLAGS=@LIPO_32BIT_FLAGS@
 
+# Flags to lipo to produce an intel-64-only universal executable
+LIPO_INTEL64_FLAGS=@LIPO_INTEL64_FLAGS@
+
 # Options to enable prebinding (for fast startup prior to Mac OS X 10.3)
 OTHER_LIBTOOL_OPT=@OTHER_LIBTOOL_OPT@
 
@@ -195,6 +202,9 @@ ENSUREPIP=      @ENSUREPIP@
 OPENSSL_INCLUDES=@OPENSSL_INCLUDES@
 OPENSSL_LIBS=@OPENSSL_LIBS@
 OPENSSL_LDFLAGS=@OPENSSL_LDFLAGS@
+
+# Default zoneinfo.TZPATH. Added here to expose it in sysconfig.get_config_var
+TZPATH=@TZPATH@
 
 # Modes for directories, executables and data files created by the
 # install process.  Default to user-only-writable for all file types.
@@ -243,7 +253,7 @@ LIBOBJS=	@LIBOBJS@
 PYTHON=		python$(EXE)
 BUILDPYTHON=	python$(BUILDEXE)
 
-PYTHON_FOR_REGEN=@PYTHON_FOR_REGEN@
+PYTHON_FOR_REGEN?=@PYTHON_FOR_REGEN@
 UPDATE_FILE=@PYTHON_FOR_REGEN@ $(srcdir)/Tools/scripts/update_file.py
 PYTHON_FOR_BUILD=@PYTHON_FOR_BUILD@
 _PYTHON_HOST_PLATFORM=@_PYTHON_HOST_PLATFORM@
@@ -294,6 +304,19 @@ LIBFFI_INCLUDEDIR=	@LIBFFI_INCLUDEDIR@
 
 ##########################################################################
 # Parser
+
+PEGEN_OBJS=		\
+		Parser/pegen/pegen.o \
+		Parser/pegen/parse.o \
+		Parser/pegen/parse_string.o \
+		Parser/pegen/peg_api.o
+
+
+PEGEN_HEADERS= \
+		$(srcdir)/Include/internal/pegen_interface.h \
+		$(srcdir)/Parser/pegen/pegen.h \
+		$(srcdir)/Parser/pegen/parse_string.h
+
 POBJS=		\
 		Parser/acceler.o \
 		Parser/grammar1.o \
@@ -302,9 +325,10 @@ POBJS=		\
 		Parser/parser.o \
 		Parser/token.o \
 
-PARSER_OBJS=	$(POBJS) Parser/myreadline.o Parser/parsetok.o Parser/tokenizer.o
+PARSER_OBJS=	$(POBJS) $(PEGEN_OBJS) Parser/myreadline.o Parser/parsetok.o Parser/tokenizer.o
 
 PARSER_HEADERS= \
+		$(PEGEN_HEADERS) \
 		$(srcdir)/Include/grammar.h \
 		$(srcdir)/Include/parsetok.h \
 		$(srcdir)/Parser/parser.h \
@@ -322,12 +346,13 @@ PYTHON_OBJS=	\
 		Python/ast_unparse.o \
 		Python/bltinmodule.o \
 		Python/ceval.o \
-		Python/ceval2.o \
-		Python/ceval2_meta.o \
+		Python/ceval_gil.o \
+		Python/ceval_meta.o \
 		Python/codecs.o \
 		Python/compile.o \
 		Python/compile2.o \
 		Python/context.o \
+		Python/critical_section.o \
 		Python/dynamic_annotations.o \
 		Python/errors.o \
 		Python/frozenmain.o \
@@ -339,6 +364,7 @@ PYTHON_OBJS=	\
 		Python/getversion.o \
 		Python/graminit.o \
 		Python/hamt.o \
+		Python/hashtable.o \
 		Python/import.o \
 		Python/importdl.o \
 		Python/initconfig.o \
@@ -366,6 +392,7 @@ PYTHON_OBJS=	\
 		Python/structmember.o \
 		Python/symtable.o \
 		Python/sysmodule.o \
+		Python/typeid.o \
 		Python/thread.o \
 		Python/traceback.o \
 		Python/getopt.o \
@@ -585,7 +612,7 @@ clinic: check-clean-src $(srcdir)/Modules/_blake2/blake2s_impl.c
 	$(PYTHON_FOR_REGEN) $(srcdir)/Tools/clinic/clinic.py --make --srcdir $(srcdir)
 
 # Build the interpreter
-$(BUILDPYTHON):	Programs/python.o $(LIBRARY) $(LDLIBRARY) $(PY3LIBRARY)
+$(BUILDPYTHON):	Programs/python.o $(LIBRARY) $(LDLIBRARY) $(PY3LIBRARY) $(EXPORTSYMS)
 	$(LINKCC) $(PY_CORE_LDFLAGS) $(LINKFORSHARED) -o $@ Programs/python.o $(BLDLIBRARY) $(LIBS) $(MODLIBS) $(SYSLIBS)
 
 platform: $(BUILDPYTHON) pybuilddir.txt
@@ -661,6 +688,10 @@ libpython$(LDVERSION).dylib: $(LIBRARY_OBJS)
 libpython$(VERSION).sl: $(LIBRARY_OBJS)
 	$(LDSHARED) -o $@ $(LIBRARY_OBJS) $(MODLIBS) $(SHLIBS) $(LIBC) $(LIBM)
 
+# List of exported symbols for AIX
+Modules/python.exp: $(LIBRARY)
+	$(srcdir)/Modules/makexp_aix $@ "$(EXPORTSFROM)" $?
+
 # Copy up the gdb python hooks into a position where they can be automatically
 # loaded by gdb during Lib/test/test_gdb.py
 #
@@ -720,7 +751,7 @@ Makefile Modules/config.c: Makefile.pre \
 	@echo "The Makefile was updated, you may need to re-run make."
 
 
-Programs/_testembed: Programs/_testembed.o $(LIBRARY) $(LDLIBRARY) $(PY3LIBRARY)
+Programs/_testembed: Programs/_testembed.o $(LIBRARY) $(LDLIBRARY) $(PY3LIBRARY) $(EXPORTSYMS)
 	$(LINKCC) $(PY_CORE_LDFLAGS) $(LINKFORSHARED) -o $@ Programs/_testembed.o $(BLDLIBRARY) $(LIBS) $(MODLIBS) $(SYSLIBS)
 
 ############################################################################
@@ -752,12 +783,20 @@ regen-importlib: Programs/_freeze_importlib
 	    $(srcdir)/Python/importlib_zipimport.h.new
 	$(UPDATE_FILE) $(srcdir)/Python/importlib_zipimport.h $(srcdir)/Python/importlib_zipimport.h.new
 
+regen-abidump: all
+	@$(MKDIR_P) $(srcdir)/Doc/data/
+	abidw "libpython$(LDVERSION).so" --no-architecture --out-file $(srcdir)/Doc/data/python$(LDVERSION).abi.new
+	@$(UPDATE_FILE) $(srcdir)/Doc/data/python$(LDVERSION).abi $(srcdir)/Doc/data/python$(LDVERSION).abi.new
+
+check-abidump: all
+		abidiff $(srcdir)/Doc/data/python$(LDVERSION).abi "libpython$(LDVERSION).so" --drop-private-types --no-architecture --no-added-syms
 
 ############################################################################
 # Regenerate all generated files
 
 regen-all: regen-opcode regen-opcode-targets regen-typeslots regen-grammar \
-	regen-token regen-keyword regen-symbol regen-ast regen-importlib clinic
+	regen-token regen-keyword regen-symbol regen-ast regen-importlib clinic \
+	regen-pegen-metaparser regen-pegen
 
 ############################################################################
 # Special rules for object files
@@ -815,6 +854,11 @@ Python/sysmodule.o: $(srcdir)/Python/sysmodule.c Makefile $(srcdir)/Include/pydt
 		$(MULTIARCH_CPPFLAGS) \
 		-o $@ $(srcdir)/Python/sysmodule.c
 
+Python/initconfig.o: $(srcdir)/Python/initconfig.c
+	$(CC) -c $(PY_CORE_CFLAGS) \
+		-DPLATLIBDIR='"$(PLATLIBDIR)"' \
+		-o $@ $(srcdir)/Python/initconfig.c
+
 $(IO_OBJS): $(IO_H)
 
 .PHONY: regen-grammar
@@ -829,19 +873,35 @@ regen-grammar: regen-token
 	$(UPDATE_FILE) $(srcdir)/Include/graminit.h $(srcdir)/Include/graminit.h.new
 	$(UPDATE_FILE) $(srcdir)/Python/graminit.c $(srcdir)/Python/graminit.c.new
 
+.PHONY: regen-pegen-metaparser
+regen-pegen-metaparser:
+	@$(MKDIR_P) $(srcdir)/Tools/peg_generator/pegen
+	PYTHONPATH=$(srcdir)/Tools/peg_generator $(PYTHON_FOR_REGEN) -m pegen -q python \
+	$(srcdir)/Tools/peg_generator/pegen/metagrammar.gram \
+	-o $(srcdir)/Tools/peg_generator/pegen/grammar_parser.py.new
+	$(UPDATE_FILE) $(srcdir)/Tools/peg_generator/pegen/grammar_parser.py \
+	$(srcdir)/Tools/peg_generator/pegen/grammar_parser.py.new
+
+.PHONY: regen-pegen
+regen-pegen:
+	@$(MKDIR_P) $(srcdir)/Parser/pegen
+	PYTHONPATH=$(srcdir)/Tools/peg_generator $(PYTHON_FOR_REGEN) -m pegen -q c \
+		$(srcdir)/Grammar/python.gram \
+		$(srcdir)/Grammar/Tokens \
+		-o $(srcdir)/Parser/pegen/parse.new.c
+	$(UPDATE_FILE) $(srcdir)/Parser/pegen/parse.c $(srcdir)/Parser/pegen/parse.new.c
+
 .PHONY=regen-ast
 regen-ast:
-	# Regenerate Include/Python-ast.h using Parser/asdl_c.py -h
+	# Regenerate Include/Python-ast.h and Python/Python-ast.c using Parser/asdl_c.py
 	$(MKDIR_P) $(srcdir)/Include
-	$(PYTHON_FOR_REGEN) $(srcdir)/Parser/asdl_c.py \
-		-h $(srcdir)/Include/Python-ast.h.new \
-		$(srcdir)/Parser/Python.asdl
-	$(UPDATE_FILE) $(srcdir)/Include/Python-ast.h $(srcdir)/Include/Python-ast.h.new
-	# Regenerate Python/Python-ast.c using Parser/asdl_c.py -c
 	$(MKDIR_P) $(srcdir)/Python
 	$(PYTHON_FOR_REGEN) $(srcdir)/Parser/asdl_c.py \
-		-c $(srcdir)/Python/Python-ast.c.new \
-		$(srcdir)/Parser/Python.asdl
+		$(srcdir)/Parser/Python.asdl \
+		-H $(srcdir)/Include/Python-ast.h.new \
+		-C $(srcdir)/Python/Python-ast.c.new
+
+	$(UPDATE_FILE) $(srcdir)/Include/Python-ast.h $(srcdir)/Include/Python-ast.h.new
 	$(UPDATE_FILE) $(srcdir)/Python/Python-ast.c $(srcdir)/Python/Python-ast.c.new
 
 .PHONY: regen-opcode
@@ -882,9 +942,10 @@ regen-token:
 
 .PHONY: regen-keyword
 regen-keyword:
-	# Regenerate Lib/keyword.py from Grammar/Grammar and Grammar/Tokens
-	# using Parser/pgen
-	PYTHONPATH=$(srcdir) $(PYTHON_FOR_REGEN) -m Parser.pgen.keywordgen $(srcdir)/Grammar/Grammar \
+	# Regenerate Lib/keyword.py from Grammar/python.gram and Grammar/Tokens
+	# using Tools/peg_generator/pegen
+	PYTHONPATH=$(srcdir)/Tools/peg_generator $(PYTHON_FOR_REGEN) -m pegen.keywordgen \
+		$(srcdir)/Grammar/python.gram \
 		$(srcdir)/Grammar/Tokens \
 		$(srcdir)/Lib/keyword.py.new
 	$(UPDATE_FILE) $(srcdir)/Lib/keyword.py $(srcdir)/Lib/keyword.py.new
@@ -944,20 +1005,22 @@ Objects/bytearrayobject.o: $(srcdir)/Objects/bytearrayobject.c $(BYTESTR_DEPS)
 
 Objects/unicodeobject.o: $(srcdir)/Objects/unicodeobject.c $(UNICODE_DEPS)
 
-Objects/dictobject.o: $(srcdir)/Objects/stringlib/eq.h
+Objects/dictobject.o: $(srcdir)/Objects/stringlib/eq.h $(srcdir)/Include/internal/pycore_dict.h
 Objects/setobject.o: $(srcdir)/Objects/stringlib/eq.h
 
 .PHONY: regen-opcode-targets
 regen-opcode-targets:
 	# Regenerate Python/opcode_targets.h from Lib/opcode.py
 	# using Python/makeopcodetargets.py
-	$(PYTHON_FOR_REGEN) $(srcdir)/Python/makeopcodetargets.py \
-		$(srcdir)/Python/opcode_targets.h.new
-	$(UPDATE_FILE) $(srcdir)/Python/opcode_targets.h $(srcdir)/Python/opcode_targets.h.new
-	$(PYTHON_FOR_REGEN) $(srcdir)/Python/makeopcodetargets2.py
+	$(PYTHON_FOR_REGEN) $(srcdir)/Python/makeopcodetargets.py
 
-Python/ceval.o: $(srcdir)/Python/opcode_targets.h $(srcdir)/Python/ceval_gil.h \
-		$(srcdir)/Python/condvar.h
+Python/ceval_gil.o: $(srcdir)/Python/ceval_gil.h $(srcdir)/Python/condvar.h
+
+Python/ceval.o: $(srcdir)/Python/ceval.c $(srcdir)/Python/opcode_targets.h
+	$${CEVAL_CC:-$(CC)} -c $(PY_CORE_CFLAGS) $$CEVAL_FLAGS -o $@ $<
+	$${CEVAL_CC:-$(CC)} -c -S $(PY_CORE_CFLAGS) -g0 $$CEVAL_FLAGS -o Python/ceval.s $<
+
+Python/ceval_meta.o: $(srcdir)/Python/opcode_names.h $(srcdir)/Python/ceval_intrinsics.h
 
 Python/frozen.o: $(srcdir)/Python/importlib.h $(srcdir)/Python/importlib_external.h \
 		$(srcdir)/Python/importlib_zipimport.h
@@ -1002,10 +1065,10 @@ PYTHON_HEADERS= \
 		$(srcdir)/Include/bltinmodule.h \
 		$(srcdir)/Include/boolobject.h \
 		$(srcdir)/Include/bytearrayobject.h \
-		$(srcdir)/Include/bytes_methods.h \
 		$(srcdir)/Include/bytesobject.h \
 		$(srcdir)/Include/cellobject.h \
 		$(srcdir)/Include/ceval.h \
+		$(srcdir)/Include/ceval_meta.h \
 		$(srcdir)/Include/classobject.h \
 		$(srcdir)/Include/code.h \
 		$(srcdir)/Include/code2.h \
@@ -1015,7 +1078,6 @@ PYTHON_HEADERS= \
 		$(srcdir)/Include/context.h \
 		$(srcdir)/Include/descrobject.h \
 		$(srcdir)/Include/dictobject.h \
-		$(srcdir)/Include/dtoa.h \
 		$(srcdir)/Include/dynamic_annotations.h \
 		$(srcdir)/Include/enumobject.h \
 		$(srcdir)/Include/errcode.h \
@@ -1033,6 +1095,7 @@ PYTHON_HEADERS= \
 		$(srcdir)/Include/intrcheck.h \
 		$(srcdir)/Include/iterobject.h \
 		$(srcdir)/Include/listobject.h \
+		$(srcdir)/Include/lock.h \
 		$(srcdir)/Include/longintrepr.h \
 		$(srcdir)/Include/longobject.h \
 		$(srcdir)/Include/marshal.h \
@@ -1045,8 +1108,10 @@ PYTHON_HEADERS= \
 		$(srcdir)/Include/object.h \
 		$(srcdir)/Include/objimpl.h \
 		$(srcdir)/Include/opcode.h \
+		$(srcdir)/Include/opcode.h \
 		$(srcdir)/Include/osdefs.h \
 		$(srcdir)/Include/osmodule.h \
+		$(srcdir)/Include/parking_lot.h \
 		$(srcdir)/Include/patchlevel.h \
 		$(srcdir)/Include/picklebufobject.h \
 		$(srcdir)/Include/pyarena.h \
@@ -1056,6 +1121,7 @@ PYTHON_HEADERS= \
 		$(srcdir)/Include/pydtrace.h \
 		$(srcdir)/Include/pyerrors.h \
 		$(srcdir)/Include/pyfpe.h \
+		$(srcdir)/Include/pyframe.h \
 		$(srcdir)/Include/pyhash.h \
 		$(srcdir)/Include/pylifecycle.h \
 		$(srcdir)/Include/pymacconfig.h \
@@ -1091,13 +1157,19 @@ PYTHON_HEADERS= \
 		$(srcdir)/Include/Python-ast.h \
 		\
 		$(srcdir)/Include/cpython/abstract.h \
+		$(srcdir)/Include/cpython/bytearrayobject.h \
+		$(srcdir)/Include/cpython/bytesobject.h \
 		$(srcdir)/Include/cpython/ceval.h \
+		$(srcdir)/Include/cpython/code.h \
 		$(srcdir)/Include/cpython/dictobject.h \
 		$(srcdir)/Include/cpython/fileobject.h \
+		$(srcdir)/Include/cpython/fileutils.h \
+		$(srcdir)/Include/cpython/frameobject.h \
 		$(srcdir)/Include/cpython/import.h \
 		$(srcdir)/Include/cpython/initconfig.h \
 		$(srcdir)/Include/cpython/interpreteridobject.h \
 		$(srcdir)/Include/cpython/listobject.h \
+		$(srcdir)/Include/cpython/methodobject.h \
 		$(srcdir)/Include/cpython/object.h \
 		$(srcdir)/Include/cpython/objimpl.h \
 		$(srcdir)/Include/cpython/pyerrors.h \
@@ -1114,19 +1186,27 @@ PYTHON_HEADERS= \
 		$(srcdir)/Include/mimalloc/mimalloc-internal.h \
 		$(srcdir)/Include/mimalloc/mimalloc-types.h \
 		\
+		$(srcdir)/Include/internal/pycore_abstract.h \
 		$(srcdir)/Include/internal/pycore_accu.h \
 		$(srcdir)/Include/internal/pycore_atomic.h \
+		$(srcdir)/Include/internal/pycore_byteswap.h \
+		$(srcdir)/Include/internal/pycore_bytes_methods.h \
 		$(srcdir)/Include/internal/pycore_call.h \
 		$(srcdir)/Include/internal/pycore_ceval.h \
 		$(srcdir)/Include/internal/pycore_code.h \
 		$(srcdir)/Include/internal/pycore_condvar.h \
 		$(srcdir)/Include/internal/pycore_context.h \
+		$(srcdir)/Include/internal/pycore_critical_section.h \
+		$(srcdir)/Include/internal/pycore_dtoa.h \
 		$(srcdir)/Include/internal/pycore_fileutils.h \
+		$(srcdir)/Include/internal/pycore_generator.h \
 		$(srcdir)/Include/internal/pycore_getopt.h \
 		$(srcdir)/Include/internal/pycore_gil.h \
 		$(srcdir)/Include/internal/pycore_hamt.h \
+		$(srcdir)/Include/internal/pycore_hashtable.h \
 		$(srcdir)/Include/internal/pycore_import.h \
 		$(srcdir)/Include/internal/pycore_initconfig.h \
+		$(srcdir)/Include/internal/pycore_interp.h \
 		$(srcdir)/Include/internal/pycore_object.h \
 		$(srcdir)/Include/internal/pycore_pathconfig.h \
 		$(srcdir)/Include/internal/pycore_pyerrors.h \
@@ -1134,6 +1214,9 @@ PYTHON_HEADERS= \
 		$(srcdir)/Include/internal/pycore_pylifecycle.h \
 		$(srcdir)/Include/internal/pycore_pymem.h \
 		$(srcdir)/Include/internal/pycore_pystate.h \
+		$(srcdir)/Include/internal/pycore_runtime.h \
+		$(srcdir)/Include/internal/pycore_stackwalk.h \
+		$(srcdir)/Include/internal/pycore_sysmodule.h \
 		$(srcdir)/Include/internal/pycore_traceback.h \
 		$(srcdir)/Include/internal/pycore_tupleobject.h \
 		$(srcdir)/Include/internal/pycore_warnings.h \
@@ -1302,6 +1385,12 @@ altbininstall: $(BUILDPYTHON) @FRAMEWORKPYTHONW@
 			-output $(DESTDIR)$(BINDIR)/python$(VERSION)-32$(EXE) \
 			$(DESTDIR)$(BINDIR)/python$(VERSION)$(EXE); \
 	fi
+	if test "x$(LIPO_INTEL64_FLAGS)" != "x" ; then \
+		rm -f $(DESTDIR)$(BINDIR)python$(VERSION)-intel64$(EXE); \
+		lipo $(LIPO_INTEL64_FLAGS) \
+			-output $(DESTDIR)$(BINDIR)/python$(VERSION)-intel64$(EXE) \
+			$(DESTDIR)$(BINDIR)/python$(VERSION)$(EXE); \
+	fi
 
 bininstall: altbininstall
 	if test ! -d $(DESTDIR)$(LIBPC); then \
@@ -1336,6 +1425,10 @@ bininstall: altbininstall
 	if test "x$(LIPO_32BIT_FLAGS)" != "x" ; then \
 		rm -f $(DESTDIR)$(BINDIR)/python3-32$(EXE); \
 		(cd $(DESTDIR)$(BINDIR); $(LN) -s python$(VERSION)-32$(EXE) python3-32$(EXE)) \
+	fi
+	if test "x$(LIPO_INTEL64_FLAGS)" != "x" ; then \
+		rm -f $(DESTDIR)$(BINDIR)/python3-intel64$(EXE); \
+		(cd $(DESTDIR)$(BINDIR); $(LN) -s python$(VERSION)-intel64$(EXE) python3-intel64$(EXE)) \
 	fi
 
 # Install the versioned manual page
@@ -1414,9 +1507,11 @@ LIBSUBDIRS=	tkinter tkinter/test tkinter/test/test_tkinter \
 		test/test_importlib/namespace_pkgs/project3 \
 		test/test_importlib/namespace_pkgs/project3/parent \
 		test/test_importlib/namespace_pkgs/project3/parent/child \
+		test/test_importlib/partial \
 		test/test_importlib/source \
 		test/test_importlib/zipdata01 \
 		test/test_importlib/zipdata02 \
+		test/test_zoneinfo test/test_zoneinfo/data \
 		test/ziptestdata \
 		asyncio \
 		test/test_asyncio \
@@ -1432,12 +1527,14 @@ LIBSUBDIRS=	tkinter tkinter/test tkinter/test/test_tkinter \
 		ctypes ctypes/test ctypes/macholib \
 		idlelib idlelib/Icons idlelib/idle_test \
 		distutils distutils/command distutils/tests $(XMLLIBSUBDIRS) \
+		test/test_peg_generator \
 		test/test_tools test/test_warnings test/test_warnings/data \
 		turtledemo \
 		multiprocessing multiprocessing/dummy \
 		unittest unittest/test unittest/test/testmock \
 		venv venv/scripts venv/scripts/common venv/scripts/posix \
-		curses pydoc_data
+		curses pydoc_data \
+		zoneinfo
 libinstall:	build_all $(srcdir)/Modules/xxmodule.c
 	@for i in $(SCRIPTDIR) $(LIBDEST); \
 	do \
@@ -1595,7 +1692,7 @@ LIBPL=		@LIBPL@
 LIBPC=		$(LIBDIR)/pkgconfig
 
 libainstall:	@DEF_MAKE_RULE@ python-config
-	@for i in $(LIBDIR) $(LIBPL) $(LIBPC); \
+	@for i in $(LIBDIR) $(LIBPL) $(LIBPC) $(BINDIR); \
 	do \
 		if test ! -d $(DESTDIR)$$i; then \
 			echo "Creating directory $$i"; \
@@ -1805,6 +1902,7 @@ clean-retain-profile: pycremoval
 	find . -name '*.[oa]' -exec rm -f {} ';'
 	find . -name '*.s[ol]' -exec rm -f {} ';'
 	find . -name '*.so.[0-9]*.[0-9]*' -exec rm -f {} ';'
+	find . -name '*.lst' -exec rm -f {} ';'
 	find build -name 'fficonfig.h' -exec rm -f {} ';' || true
 	find build -name '*.py' -exec rm -f {} ';' || true
 	find build -name '*.py[co]' -exec rm -f {} ';' || true

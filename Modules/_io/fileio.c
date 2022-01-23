@@ -3,7 +3,7 @@
 #define PY_SSIZE_T_CLEAN
 #include "Python.h"
 #include "pycore_object.h"
-#include "structmember.h"
+#include "structmember.h"         // PyMemberDef
 #include <stdbool.h>
 #ifdef HAVE_SYS_TYPES_H
 #include <sys/types.h>
@@ -276,7 +276,10 @@ _io_FileIO___init___impl(fileio *self, PyObject *nameobj, const char *mode,
         if (!PyUnicode_FSDecoder(nameobj, &stringobj)) {
             return -1;
         }
+_Py_COMP_DIAG_PUSH
+_Py_COMP_DIAG_IGNORE_DEPR_DECLS
         widename = PyUnicode_AsUnicode(stringobj);
+_Py_COMP_DIAG_POP
         if (widename == NULL)
             return -1;
 #else

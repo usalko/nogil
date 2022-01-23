@@ -15,7 +15,7 @@
  * 2001-05-14 fl   fixes for 1.5.2 compatibility
  * 2001-07-01 fl   added BIGCHARSET support (from Martin von Loewis)
  * 2001-10-18 fl   fixed group reset issue (from Matthew Mueller)
- * 2001-10-20 fl   added split primitive; reenable unicode for 1.6/2.0/2.1
+ * 2001-10-20 fl   added split primitive; re-enable unicode for 1.6/2.0/2.1
  * 2001-10-21 fl   added sub/subn primitive
  * 2001-10-24 fl   added finditer primitive (for 2.2 only)
  * 2001-12-07 fl   fixed memory leak in sub/subn (Guido van Rossum)
@@ -41,7 +41,7 @@ static const char copyright[] =
 #define PY_SSIZE_T_CLEAN
 
 #include "Python.h"
-#include "structmember.h" /* offsetof */
+#include "structmember.h"         // PyMemberDef
 
 #include "sre.h"
 
@@ -351,7 +351,7 @@ state_reset(SRE_STATE* state)
     data_stack_dealloc(state);
 }
 
-static void*
+static const void*
 getstring(PyObject* string, Py_ssize_t* p_length,
           int* p_isbytes, int* p_charsize,
           Py_buffer *view)
@@ -398,11 +398,11 @@ state_init(SRE_STATE* state, PatternObject* pattern, PyObject* string,
 
     Py_ssize_t length;
     int isbytes, charsize;
-    void* ptr;
+    const void* ptr;
 
     memset(state, 0, sizeof(SRE_STATE));
 
-    state->mark = PyMem_New(void *, pattern->groups * 2);
+    state->mark = PyMem_New(const void *, pattern->groups * 2);
     if (!state->mark) {
         PyErr_NoMemory();
         goto err;
@@ -454,7 +454,10 @@ state_init(SRE_STATE* state, PatternObject* pattern, PyObject* string,
 
     return string;
   err:
-    PyMem_Del(state->mark);
+    /* We add an explicit cast here because MSVC has a bug when
+       compiling C code where it believes that `const void**` cannot be
+       safely casted to `void*`, see bpo-39943 for details. */
+    PyMem_Del((void*) state->mark);
     state->mark = NULL;
     if (state->buffer.buf)
         PyBuffer_Release(&state->buffer);
@@ -468,7 +471,8 @@ state_fini(SRE_STATE* state)
         PyBuffer_Release(&state->buffer);
     Py_XDECREF(state->string);
     data_stack_dealloc(state);
-    PyMem_Del(state->mark);
+    /* See above PyMem_Del for why we explicitly cast here. */
+    PyMem_Del((void*) state->mark);
     state->mark = NULL;
 }
 
@@ -891,7 +895,7 @@ _sre_SRE_Pattern_split_impl(PatternObject *self, PyObject *string,
     Py_ssize_t status;
     Py_ssize_t n;
     Py_ssize_t i;
-    void* last;
+    const void* last;
 
     assert(self->codesize != 0);
 
@@ -984,7 +988,7 @@ pattern_subx(PatternObject* self, PyObject* ptemplate, PyObject* string,
     PyObject* item;
     PyObject* filter;
     PyObject* match;
-    void* ptr;
+    const void* ptr;
     Py_ssize_t status;
     Py_ssize_t n;
     Py_ssize_t i, b, e;
@@ -1081,7 +1085,7 @@ pattern_subx(PatternObject* self, PyObject* ptemplate, PyObject* string,
             match = pattern_new_match(self, &state, 1);
             if (!match)
                 goto error;
-            item = _PyObject_CallOneArg(filter, match);
+            item = PyObject_CallOneArg(filter, match);
             Py_DECREF(match);
             if (!item)
                 goto error;
@@ -1338,7 +1342,7 @@ _sre_compile_impl(PyObject *module, PyObject *pattern, int flags,
 
     n = PyList_GET_SIZE(code);
     /* coverity[ampersand_in_size] */
-    self = PyObject_NEW_VAR(PatternObject, &Pattern_Type, n);
+    self = PyObject_NewVar(PatternObject, &Pattern_Type, n);
     if (!self)
         return NULL;
     self->weakreflist = NULL;
@@ -1895,7 +1899,7 @@ match_getslice_by_index(MatchObject* self, Py_ssize_t index, PyObject* def)
     int isbytes, charsize;
     Py_buffer view;
     PyObject *result;
-    void* ptr;
+    const void* ptr;
     Py_ssize_t i, j;
 
     assert(0 <= index && index < self->groups);
@@ -2327,8 +2331,8 @@ pattern_new_match(PatternObject* pattern, SRE_STATE* state, Py_ssize_t status)
 
         /* create match object (with room for extra group marks) */
         /* coverity[ampersand_in_size] */
-        match = PyObject_NEW_VAR(MatchObject, &Match_Type,
-                                 2*(pattern->groups+1));
+        match = PyObject_NewVar(MatchObject, &Match_Type,
+                                2*(pattern->groups+1));
         if (!match)
             return NULL;
 
@@ -2468,7 +2472,7 @@ pattern_scanner(PatternObject *self, PyObject *string, Py_ssize_t pos, Py_ssize_
     ScannerObject* scanner;
 
     /* create scanner object */
-    scanner = PyObject_NEW(ScannerObject, &Scanner_Type);
+    scanner = PyObject_New(ScannerObject, &Scanner_Type);
     if (!scanner)
         return NULL;
     scanner->pattern = NULL;
@@ -2518,7 +2522,7 @@ pattern_richcompare(PyObject *lefto, PyObject *righto, int op)
         Py_RETURN_NOTIMPLEMENTED;
     }
 
-    if (Py_TYPE(lefto) != &Pattern_Type || Py_TYPE(righto) != &Pattern_Type) {
+    if (!Py_IS_TYPE(lefto, &Pattern_Type) || !Py_IS_TYPE(righto, &Pattern_Type)) {
         Py_RETURN_NOTIMPLEMENTED;
     }
 

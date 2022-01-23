@@ -36,7 +36,7 @@ values() methods are not supported.");
 
 typedef struct {
     PyObject_HEAD
-    int di_size;        /* -1 means recompute */
+    Py_ssize_t di_size;        /* -1 means recompute */
     GDBM_FILE di_dbm;
 } dbmobject;
 
@@ -44,7 +44,7 @@ static PyTypeObject Dbmtype;
 
 #include "clinic/_gdbmmodule.c.h"
 
-#define is_dbmobject(v) (Py_TYPE(v) == &Dbmtype)
+#define is_dbmobject(v) Py_IS_TYPE(v, &Dbmtype)
 #define check_dbmobject_open(v) if ((v)->di_dbm == NULL) \
     { PyErr_SetString(DbmError, "GDBM object has already been closed"); \
       return NULL; }
@@ -102,19 +102,39 @@ dbm_length(dbmobject *dp)
         return -1;
     }
     if (dp->di_size < 0) {
+#if GDBM_VERSION_MAJOR >= 1 && GDBM_VERSION_MINOR >= 11
+        errno = 0;
+        gdbm_count_t count;
+        if (gdbm_count(dp->di_dbm, &count) == -1) {
+            if (errno != 0) {
+                PyErr_SetFromErrno(DbmError);
+            }
+            else {
+                PyErr_SetString(DbmError, gdbm_strerror(gdbm_errno));
+            }
+            return -1;
+        }
+        if (count > PY_SSIZE_T_MAX) {
+            PyErr_SetString(PyExc_OverflowError, "count exceeds PY_SSIZE_T_MAX");
+            return -1;
+        }
+        dp->di_size = count;
+#else
         datum key,okey;
-        int size;
         okey.dsize=0;
         okey.dptr=NULL;
 
-        size = 0;
-        for (key=gdbm_firstkey(dp->di_dbm); key.dptr;
+        Py_ssize_t size = 0;
+        for (key = gdbm_firstkey(dp->di_dbm); key.dptr;
              key = gdbm_nextkey(dp->di_dbm,okey)) {
             size++;
-            if(okey.dsize) free(okey.dptr);
+            if (okey.dsize) {
+                free(okey.dptr);
+            }
             okey=key;
         }
         dp->di_size = size;
+#endif
     }
     return dp->di_size;
 }
@@ -413,7 +433,7 @@ The following code prints every key in the database db, without having
 to create a list in memory that contains them all:
 
       k = db.firstkey()
-      while k != None:
+      while k is not None:
           print(k)
           k = db.nextkey(k)
 [clinic start generated code]*/
@@ -421,7 +441,7 @@ to create a list in memory that contains them all:
 static PyObject *
 _gdbm_gdbm_nextkey_impl(dbmobject *self, const char *key,
                         Py_ssize_clean_t key_length)
-/*[clinic end generated code: output=192ab892de6eb2f6 input=1f1606943614e36f]*/
+/*[clinic end generated code: output=192ab892de6eb2f6 input=b7b0949c520d730c]*/
 {
     PyObject *v;
     datum dbm_key, nextkey;

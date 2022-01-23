@@ -22,6 +22,25 @@ static int validate_stmt(stmt_ty);
 static int validate_expr(expr_ty, expr_context_ty);
 
 static int
+validate_name(PyObject *name)
+{
+    assert(PyUnicode_Check(name));
+    static const char * const forbidden[] = {
+        "None",
+        "True",
+        "False",
+        NULL
+    };
+    for (int i = 0; forbidden[i] != NULL; i++) {
+        if (_PyUnicode_EqualToASCIIString(name, forbidden[i])) {
+            PyErr_Format(PyExc_ValueError, "Name node can't be used with '%s' constant", forbidden[i]);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int
 validate_comprehension(asdl_seq *gens)
 {
     Py_ssize_t i;
@@ -147,6 +166,11 @@ validate_constant(PyObject *value)
         return 1;
     }
 
+    if (!PyErr_Occurred()) {
+        PyErr_Format(PyExc_TypeError,
+                     "got an invalid type in Constant: %s",
+                     _PyType_Name(Py_TYPE(value)));
+    }
     return 0;
 }
 
@@ -168,6 +192,9 @@ validate_expr(expr_ty exp, expr_context_ty ctx)
         actual_ctx = exp->v.Starred.ctx;
         break;
     case Name_kind:
+        if (!validate_name(exp->v.Name.id)) {
+            return 0;
+        }
         actual_ctx = exp->v.Name.ctx;
         break;
     case List_kind:
@@ -261,9 +288,6 @@ validate_expr(expr_ty exp, expr_context_ty ctx)
             validate_keywords(exp->v.Call.keywords);
     case Constant_kind:
         if (!validate_constant(exp->v.Constant.value)) {
-            PyErr_Format(PyExc_TypeError,
-                         "got an invalid type in Constant: %s",
-                         _PyType_Name(Py_TYPE(exp->v.Constant.value)));
             return 0;
         }
         return 1;
@@ -725,11 +749,8 @@ num_stmts(const node *n)
                 return l;
             }
         default: {
-            char buf[128];
-
-            sprintf(buf, "Non-statement found: %d %d",
-                    TYPE(n), NCH(n));
-            Py_FatalError(buf);
+            _Py_FatalErrorFormat(__func__, "Non-statement found: %d %d",
+                                 TYPE(n), NCH(n));
         }
     }
     Py_UNREACHABLE();
@@ -756,7 +777,8 @@ PyAST_FromNodeObject(const node *n, PyCompilerFlags *flags,
     /* borrowed reference */
     c.c_filename = filename;
     c.c_normalize = NULL;
-    c.c_feature_version = flags ? flags->cf_feature_version : PY_MINOR_VERSION;
+    c.c_feature_version = flags && (flags->cf_flags & PyCF_ONLY_AST) ?
+        flags->cf_feature_version : PY_MINOR_VERSION;
 
     if (TYPE(n) == encoding_decl)
         n = CHILD(n, 0);
@@ -1662,7 +1684,7 @@ ast_for_decorator(struct compiling *c, const node *n)
     REQ(n, decorator);
     REQ(CHILD(n, 0), AT);
     REQ(CHILD(n, 2), NEWLINE);
-    
+
     return ast_for_expr(c, CHILD(n, 1));
 }
 
@@ -3014,7 +3036,8 @@ ast_for_call(struct compiling *c, const node *n, expr_ty func,
                 e = ast_for_expr(c, CHILD(ch, 1));
                 if (!e)
                     return NULL;
-                kw = keyword(NULL, e, c->c_arena);
+                kw = keyword(NULL, e, chch->n_lineno, chch->n_col_offset,
+                             e->end_lineno, e->end_col_offset, c->c_arena);
                 asdl_seq_SET(keywords, nkeywords++, kw);
                 ndoublestars++;
             }
@@ -3048,8 +3071,7 @@ ast_for_call(struct compiling *c, const node *n, expr_ty func,
             else {
                 /* a keyword argument */
                 keyword_ty kw;
-                identifier key, tmp;
-                int k;
+                identifier key;
 
                 // To remain LL(1), the grammar accepts any test (basically, any
                 // expression) in the keyword slot of a call site.  So, we need
@@ -3093,18 +3115,12 @@ ast_for_call(struct compiling *c, const node *n, expr_ty func,
                 if (forbidden_name(c, key, chch, 1)) {
                     return NULL;
                 }
-                for (k = 0; k < nkeywords; k++) {
-                    tmp = ((keyword_ty)asdl_seq_GET(keywords, k))->arg;
-                    if (tmp && !PyUnicode_Compare(tmp, key)) {
-                        ast_error(c, chch,
-                                  "keyword argument repeated");
-                        return NULL;
-                    }
-                }
                 e = ast_for_expr(c, CHILD(ch, 2));
                 if (!e)
                     return NULL;
-                kw = keyword(key, e, c->c_arena);
+                kw = keyword(key, e, chch->n_lineno, chch->n_col_offset,
+                             e->end_lineno, e->end_col_offset, c->c_arena);
+
                 if (!kw)
                     return NULL;
                 asdl_seq_SET(keywords, nkeywords++, kw);
@@ -3171,10 +3187,7 @@ ast_for_expr_stmt(struct compiling *c, const node *n)
         expr1 = ast_for_testlist(c, ch);
         if (!expr1)
             return NULL;
-        if(!set_context(c, expr1, Store, ch))
-            return NULL;
-        /* set_context checks that most expressions are not the left side.
-          Augmented assignments can only have a name, a subscript, or an
+        /* Augmented assignments can only have a name, a subscript, or an
           attribute on the left, though, so we have to explicitly check for
           those. */
         switch (expr1->kind) {
@@ -3183,8 +3196,14 @@ ast_for_expr_stmt(struct compiling *c, const node *n)
             case Subscript_kind:
                 break;
             default:
-                ast_error(c, ch, "illegal expression for augmented assignment");
+                ast_error(c, ch, "'%s' is an illegal expression for augmented assignment",
+                          get_expr_name(expr1));
                 return NULL;
+        }
+
+        /* set_context checks that most expressions are not the left side. */
+        if(!set_context(c, expr1, Store, ch)) {
+            return NULL;
         }
 
         ch = CHILD(n, 2);
@@ -4595,7 +4614,7 @@ decode_unicode_with_escapes(struct compiling *c, const node *n, const char *s,
         if (*s & 0x80) { /* XXX inefficient */
             PyObject *w;
             int kind;
-            void *data;
+            const void *data;
             Py_ssize_t len, i;
             w = decode_utf8(c, &s, end);
             if (w == NULL) {
@@ -4621,7 +4640,7 @@ decode_unicode_with_escapes(struct compiling *c, const node *n, const char *s,
     s = buf;
 
     const char *first_invalid_escape;
-    v = _PyUnicode_DecodeUnicodeEscape(s, len, NULL, &first_invalid_escape);
+    v = _PyUnicode_DecodeUnicodeEscapeInternal(s, len, NULL, NULL, &first_invalid_escape);
 
     if (v != NULL && first_invalid_escape != NULL) {
         if (warn_invalid_escape_sequence(c, n, *first_invalid_escape) < 0) {
@@ -4747,7 +4766,7 @@ fstring_compile_expr(const char *expr_start, const char *expr_end,
 
     len = expr_end - expr_start;
     /* Allocate 3 extra bytes: open paren, close paren, null byte. */
-    str = PyMem_RawMalloc(len + 3);
+    str = PyMem_Malloc(len + 3);
     if (str == NULL) {
         PyErr_NoMemory();
         return NULL;
@@ -4763,7 +4782,7 @@ fstring_compile_expr(const char *expr_start, const char *expr_end,
     mod_n = PyParser_SimpleParseStringFlagsFilename(str, "<fstring>",
                                                     Py_eval_input, 0);
     if (!mod_n) {
-        PyMem_RawFree(str);
+        PyMem_Free(str);
         return NULL;
     }
     /* Reuse str to find the correct column offset. */
@@ -4771,7 +4790,7 @@ fstring_compile_expr(const char *expr_start, const char *expr_end,
     str[len+1] = '}';
     fstring_fix_node_location(n, mod_n, str);
     mod = PyAST_FromNode(mod_n, &cf, "<fstring>", c->c_arena);
-    PyMem_RawFree(str);
+    PyMem_Free(str);
     PyNode_Free(mod_n);
     if (!mod)
         return NULL;
@@ -5073,6 +5092,12 @@ fstring_find_expr(const char **str, const char *end, int raw, int recurse_lvl,
     /* Check for =, which puts the text value of the expression in
        expr_text. */
     if (**str == '=') {
+        if (c->c_feature_version < 8) {
+            ast_error(c, n,
+                      "f-string: self documenting expressions are "
+                      "only supported in Python 3.8 and greater");
+            goto error;
+        }
         *str += 1;
 
         /* Skip over ASCII whitespace.  No need to test for end of string
@@ -5281,7 +5306,7 @@ ExprList_Append(ExprList *l, expr_ty exp)
             Py_ssize_t i;
             /* We're still using the cached data. Switch to
                alloc-ing. */
-            l->p = PyMem_RawMalloc(sizeof(expr_ty) * new_size);
+            l->p = PyMem_Malloc(sizeof(expr_ty) * new_size);
             if (!l->p)
                 return -1;
             /* Copy the cached data into the new buffer. */
@@ -5289,9 +5314,9 @@ ExprList_Append(ExprList *l, expr_ty exp)
                 l->p[i] = l->data[i];
         } else {
             /* Just realloc. */
-            expr_ty *tmp = PyMem_RawRealloc(l->p, sizeof(expr_ty) * new_size);
+            expr_ty *tmp = PyMem_Realloc(l->p, sizeof(expr_ty) * new_size);
             if (!tmp) {
-                PyMem_RawFree(l->p);
+                PyMem_Free(l->p);
                 l->p = NULL;
                 return -1;
             }
@@ -5319,7 +5344,7 @@ ExprList_Dealloc(ExprList *l)
         /* Do nothing. */
     } else {
         /* We have dynamically allocated. Free the memory. */
-        PyMem_RawFree(l->p);
+        PyMem_Free(l->p);
     }
     l->p = NULL;
     l->size = -1;

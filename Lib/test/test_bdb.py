@@ -726,7 +726,7 @@ class StateTestCase(BaseTestCase):
                 ('line', 2, 'tfunc_import'), ('step', ),
                 ('line', 3, 'tfunc_import'), ('quit', ),
             ]
-            skip = ('importlib*', 'zipimport', TEST_MODULE)
+            skip = ('importlib*', 'zipimport', 'encodings.*', TEST_MODULE)
             with TracerRun(self, skip=skip) as tracer:
                 tracer.runcall(tfunc_import)
 
@@ -1149,13 +1149,6 @@ class IssuesTestCase(BaseTestCase):
             with TracerRun(self) as tracer:
                 tracer.runcall(tfunc_import)
 
-def test_main():
-    test.support.run_unittest(
-        StateTestCase,
-        RunTestCase,
-        BreakpointTestCase,
-        IssuesTestCase,
-    )
 
 if __name__ == "__main__":
-    test_main()
+    unittest.main()

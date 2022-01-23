@@ -1,7 +1,7 @@
 Python Multithreading without GIL
 ====================================
 
-Copyright (c) 2001-2020 Python Software Foundation.  All rights reserved.
+Copyright (c) 2001-2022 Python Software Foundation.  All rights reserved.
 
 See `Doc/license.rst </Doc/license.rst>`_ for copyright and license information.
 
@@ -29,7 +29,7 @@ The optional ``--prefix=PREFIX`` specifies the destination directory for the Pyt
 Docker
 -------------------
 
-A pre-built Docker image `colesbury/python-nogil <https://hub.docker.com/r/colesbury/python-nogil>`_ is available on Docker Hub.
+A pre-built Docker image `nogil/python <https://hub.docker.com/r/nogil/python>`_ is available on Docker Hub. For CUDA support, use  `nogil/python-cuda <https://hub.docker.com/r/nogil/python-cuda>`_.
 
 Packages
 -------------------
